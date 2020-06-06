@@ -5,6 +5,8 @@ import "net"
 import "os"
 import "net/rpc"
 import "net/http"
+import "io/ioutil"
+import "regexp"
 
 const (
 	TO_BE_PROCESSED = iota // 0
@@ -12,49 +14,70 @@ const (
 )
 
 type Master struct {
-	Files []string
+	FilesDict map[string]int
 }
 
 // Your code here -- RPC handlers for the worker to call.
 
-func (m *Master, task *Task) RequestTask() error {
+func (m *Master) RequestTask(args *MRTaskArgs, reply *MRTaskReply) error {
 	// selects a file for the worker
-	file, operationType, hasFileToMap := m.selectFile()
+	hasFileToProcess := m.selectFile(reply)
 
 	// if there are no files that need reducing, then we're done?
-	if (!hasFileToProcess) {
+	if (hasFileToProcess == false) {
 		m.Done()
 	}
-
-	// assigns the file
-	// and the operation to perform on the file to the task obj
-	task.File = file
-	task.OperationType = operationType
 
 	return nil
 }
 
-func (m* Master) selectFile() string {
+func (m* Master) selectFile(reply *MRTaskReply) (bool) {
 	// return the first file that needs to be mapped/processed
-	for file, state := range m.Files {
-		if (state == TO_BE_PROCESSED) 
-			return file, true
+	var filePath string
+	var hasFileToBeMapped, hasFileToBeReduced bool
+
+	for file, state := range m.FilesDict {
+		if (state == TO_BE_PROCESSED) {
+			filePath = file
+			hasFileToBeMapped = true
+		}
 	}
 	
-	// if there are no files to map, perhaps there are files
-	// whose contents need to reducing
-	pwdFiles, err := ioutil.ReadDir(".")
+	if (hasFileToBeMapped == false) {
+		// if there are no files to map, perhaps there are files
+		// whose contents need to reducing
+		pwdFiles, err := ioutil.ReadDir(".")
+		check(err)
 
-	// check if there are any temp files for reduction
-	for _, file := range pwdFiles {
-		match := regexp.MatchString(`mr-x-`, )
-		if (match) {
-			return file, true
+		// FIX: check if there are any temp files for reduction
+		for _, file := range pwdFiles {
+			match, err := regexp.MatchString(`mr-x-`, "mr-x-")
+			check(err)
+			if (match) {
+				filePath = file.Name()
+				hasFileToBeReduced = true
+			}
 		}
 	}
 
+	// assigns the file
+	// and the operation to perform on the file to the task obj
+	reply.FilePath = filePath
+	reply.ToMap = hasFileToBeMapped
+	reply.ToReduce = hasFileToBeReduced
+
 	// there are no files left for processing
-	return "", false
+	if (hasFileToBeMapped == true || hasFileToBeReduced == true) {
+		return true
+	} else {
+		return false
+	}
+}
+
+func check(e error) {
+	if e != nil {
+		panic(e)
+	}
 }
 
 //
@@ -66,7 +89,6 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
-
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -107,11 +129,11 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 	
 	// initialize file state dictionary
-	m.fileState = make(map[string]int)
+	m.FilesDict = make(map[string]int)
 
 	// place files in dictionary
 	for _, f := range files {
-		m.fileState[f] = TO_BE_PROCESSED
+		m.FilesDict[f] = TO_BE_PROCESSED
 	}
 
 	m.server()

@@ -24,6 +24,15 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type MRTaskArgs struct {
+	
+}
+
+type MRTaskReply struct {
+	FilePath string
+	ToMap, ToReduce bool
+}
+
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
 // Can't use the current directory since

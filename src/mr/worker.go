@@ -4,6 +4,7 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "io/ioutil"
 
 //
 // Map functions return a slice of KeyValue.
@@ -30,35 +31,28 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	
 	// create a task
-	task := MrTask{}
+	task := MRTaskArgs{}
+	reply := MRTaskReply{}
 
 	// send an RPC request to the master for a task and wait for a reply
-	filename, task := call("Master.RequestTask", &task)
+	call("Master.RequestTask", &task, &reply)
 
 	// if the type of task is to map over the contents of a file
 	// call map
-	if (task == MAP) {
-		ok := mapf(filename)
+	if (reply.ToMap == true) {
+		var words, err = ioutil.ReadFile(reply.FilePath)
+		check(err)
+		var mappedWords = mapf(reply.FilePath, string(words))
+		fmt.Println(mappedWords)
 	}
 
-	if (task == REDUCE) {
-		ok := reducef(filename)
-	}
 	// if the type of task is to reduce the contents of a file
 	// call reduce
-
-
+	// if (reply.ToReduce == true) {
+	// 	var numOccurrencesOfWord = reducef(reply.FilePath,)
+	// }
+	
 	// do we send the result of the task to the master?
-}
-
-func mapFile(file) {
-  // store intermediate key/value pairs in files in a way 
-  // that can be correctly read back during reduce tasks
-  // To write key/value pairs to a JSON file:
-  enc := json.NewEncoder(file)
-  for _, kv := ... {
-    err := enc.Encode(&kv)
-  }
 }
 
 //
@@ -106,18 +100,3 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	fmt.Println(err)
 	return false
 }
-
-
-/*
-
-func reduceFile(file) {
-  dec := json.NewDecoder(file)
-  for {
-    var kv KeyValue
-    if err := dec.Decode(&kv); err != nil {
-      break
-    }
-    kva = append(kva, kv)
-  }
-}
-*/
