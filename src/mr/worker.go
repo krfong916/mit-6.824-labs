@@ -5,6 +5,8 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 import "io/ioutil"
+import "os"
+import "sort"
 
 //
 // Map functions return a slice of KeyValue.
@@ -12,6 +14,19 @@ import "io/ioutil"
 type KeyValue struct {
 	Key   string
 	Value string
+}
+
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int {
+	return len(a)
+}
+func (a ByKey) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+}
+func (a ByKey) Less(i, j int) bool {
+	return a[i].Key < a[j].Key
 }
 
 //
@@ -30,6 +45,9 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	
+	// create a collection for k,v pairs of words read from a file
+	// words := []KeyValue{}
+
 	// create a task
 	task := MRTaskArgs{}
 	reply := MRTaskReply{}
@@ -38,12 +56,25 @@ func Worker(mapf func(string, string) []KeyValue,
 	call("Master.RequestTask", &task, &reply)
 
 	// if the type of task is to map over the contents of a file
-	// call map
+	
 	if (reply.ToMap == true) {
-		var words, err = ioutil.ReadFile(reply.FilePath)
-		check(err)
-		var mappedWords = mapf(reply.FilePath, string(words))
-		fmt.Println(mappedWords)
+		// get the file at the filepath
+		file, err := os.Open(reply.FilePath)
+		if err != nil {
+			log.Fatalf("cannot read %v", reply.FilePath)
+		}
+		// open the file and read all the contents into one byte array
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", reply.FilePath)
+		}
+		file.Close()
+		kva := mapf(reply.FilePath, string(content))
+
+		// sort the array of key and values
+		sort.Sort(ByKey(kva))
+		fmt.Println(kva)
+		// and write to a file
 	}
 
 	// if the type of task is to reduce the contents of a file
