@@ -29,6 +29,7 @@ type MRTaskArgs struct {
 }
 
 type MRTaskReply struct {
+	ID int
 	FilePath string
 	ToMap, ToReduce bool
 }

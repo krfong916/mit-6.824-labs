@@ -1,5 +1,6 @@
 package mr
 
+import "fmt"
 import "log"
 import "net"
 import "os"
@@ -13,8 +14,14 @@ const (
 	PROCESSED // 1
 )
 
+type File struct {
+	ID int
+	Name string
+	State int
+}
+
 type Master struct {
-	FilesDict map[string]int
+	FilesDict map[string]File
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -34,11 +41,14 @@ func (m *Master) RequestTask(args *MRTaskArgs, reply *MRTaskReply) error {
 func (m* Master) selectFile(reply *MRTaskReply) (bool) {
 	// return the first file that needs to be mapped/processed
 	var filePath string
+	var fileID int
 	var hasFileToBeMapped, hasFileToBeReduced bool
 
-	for file, state := range m.FilesDict {
-		if (state == TO_BE_PROCESSED) {
-			filePath = file
+	for _, file := range m.FilesDict {
+		if (file.State == TO_BE_PROCESSED) {
+			fmt.Println("here! %v", file.ID)
+			fileID = file.ID
+			filePath = file.Name
 			hasFileToBeMapped = true
 		}
 	}
@@ -62,6 +72,7 @@ func (m* Master) selectFile(reply *MRTaskReply) (bool) {
 
 	// assigns the file
 	// and the operation to perform on the file to the task obj
+	reply.ID = fileID
 	reply.FilePath = filePath
 	reply.ToMap = hasFileToBeMapped
 	reply.ToReduce = hasFileToBeReduced
@@ -129,11 +140,12 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 	
 	// initialize file state dictionary
-	m.FilesDict = make(map[string]int)
+	m.FilesDict = make(map[string]File)
 
 	// place files in dictionary
-	for _, f := range files {
-		m.FilesDict[f] = TO_BE_PROCESSED
+	for i, f := range files {
+		newFile := File{ID: i, State: TO_BE_PROCESSED, Name: f}
+		m.FilesDict[f] = newFile
 	}
 
 	m.server()

@@ -7,6 +7,7 @@ import "hash/fnv"
 import "io/ioutil"
 import "os"
 import "sort"
+import "encoding/json"
 
 //
 // Map functions return a slice of KeyValue.
@@ -16,9 +17,9 @@ type KeyValue struct {
 	Value string
 }
 
+// Sort implementation for sorting by key
 type ByKey []KeyValue
 
-// for sorting by key.
 func (a ByKey) Len() int {
 	return len(a)
 }
@@ -45,9 +46,6 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	
-	// create a collection for k,v pairs of words read from a file
-	// words := []KeyValue{}
-
 	// create a task
 	task := MRTaskArgs{}
 	reply := MRTaskReply{}
@@ -56,7 +54,6 @@ func Worker(mapf func(string, string) []KeyValue,
 	call("Master.RequestTask", &task, &reply)
 
 	// if the type of task is to map over the contents of a file
-	
 	if (reply.ToMap == true) {
 		// get the file at the filepath
 		file, err := os.Open(reply.FilePath)
@@ -69,12 +66,33 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Fatalf("cannot read %v", reply.FilePath)
 		}
 		file.Close()
-		kva := mapf(reply.FilePath, string(content))
+		kvarr := mapf(reply.FilePath, string(content))
 
 		// sort the array of key and values
-		sort.Sort(ByKey(kva))
-		fmt.Println(kva)
-		// and write to a file
+		sort.Sort(ByKey(kvarr))
+
+		fmt.Println(reply.ID)
+		fmt.Println(reply.FilePath)
+
+		// create a temporary file
+		tempFileName := fmt.Sprintf("mr-%v-", reply.ID)
+		temp, err := ioutil.TempFile("./", tempFileName)
+		if err != nil {
+			log.Fatalf("cannot create file")
+		}
+
+		// write to that file
+		// an array of objects that contain key:value strings
+
+		// store k/v pairs in an encoding that can be read by reduce tasks
+		// encode the temporary file
+		enc := json.NewEncoder(temp)
+
+		// write the array of objects as a json object
+		for _, kv := range kvarr {
+			enc.Encode(&kv)
+		}
+		os.Rename(temp.Name(), "")
 	}
 
 	// if the type of task is to reduce the contents of a file
