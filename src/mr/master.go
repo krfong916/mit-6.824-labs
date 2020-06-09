@@ -6,8 +6,6 @@ import "net"
 import "os"
 import "net/rpc"
 import "net/http"
-import "io/ioutil"
-import "regexp"
 
 const (
 	TO_BE_PROCESSED = iota // 0
@@ -15,7 +13,8 @@ const (
 )
 
 type File struct {
-	ID int
+	MapTaskID int
+	ReduceTaskID int
 	Name string
 	State int
 }
@@ -41,44 +40,29 @@ func (m *Master) RequestTask(args *MRTaskArgs, reply *MRTaskReply) error {
 func (m* Master) selectFile(reply *MRTaskReply) (bool) {
 	// return the first file that needs to be mapped/processed
 	var filePath string
-	var fileID int
-	var hasFileToBeMapped, hasFileToBeReduced bool
+	var mapID, reduceID int
+	var hasFileToBeMapped bool
 
 	for _, file := range m.FilesDict {
 		if (file.State == TO_BE_PROCESSED) {
-			fmt.Println("here! %v", file.ID)
-			fileID = file.ID
+			fmt.Println("Map task number: ", file.MapTaskID)
+			fmt.Println("Reduce task number: ", file.ReduceTaskID)
+			mapID = file.MapTaskID
+			reduceID = file.ReduceTaskID
 			filePath = file.Name
 			hasFileToBeMapped = true
 		}
-	}
-	
-	if (hasFileToBeMapped == false) {
-		// if there are no files to map, perhaps there are files
-		// whose contents need to reducing
-		pwdFiles, err := ioutil.ReadDir(".")
-		check(err)
-
-		// FIX: check if there are any temp files for reduction
-		for _, file := range pwdFiles {
-			match, err := regexp.MatchString(`mr-x-`, "mr-x-")
-			check(err)
-			if (match) {
-				filePath = file.Name()
-				hasFileToBeReduced = true
-			}
-		}
-	}
+	}	
 
 	// assigns the file
 	// and the operation to perform on the file to the task obj
-	reply.ID = fileID
+	reply.MapTaskID = mapID
+	reply.ReduceTaskID = reduceID
 	reply.FilePath = filePath
 	reply.ToMap = hasFileToBeMapped
-	reply.ToReduce = hasFileToBeReduced
-
+	
 	// there are no files left for processing
-	if (hasFileToBeMapped == true || hasFileToBeReduced == true) {
+	if (hasFileToBeMapped == true) {
 		return true
 	} else {
 		return false
@@ -89,16 +73,6 @@ func check(e error) {
 	if e != nil {
 		panic(e)
 	}
-}
-
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
 }
 
 //
@@ -136,6 +110,7 @@ func (m *Master) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeMaster(files []string, nReduce int) *Master {
+	fmt.Println("nReduce: ", nReduce)
 	// create instance of master 
 	m := Master{}
 	
@@ -144,7 +119,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// place files in dictionary
 	for i, f := range files {
-		newFile := File{ID: i, State: TO_BE_PROCESSED, Name: f}
+		newFile := File{MapTaskID: i, ReduceTaskID: nReduce, State: TO_BE_PROCESSED, Name: f}
 		m.FilesDict[f] = newFile
 	}
 

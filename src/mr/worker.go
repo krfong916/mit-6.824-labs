@@ -23,11 +23,72 @@ type ByKey []KeyValue
 func (a ByKey) Len() int {
 	return len(a)
 }
+
 func (a ByKey) Swap(i, j int) {
 	a[i], a[j] = a[j], a[i]
 }
+
 func (a ByKey) Less(i, j int) bool {
 	return a[i].Key < a[j].Key
+}
+
+//
+// main/mrworker.go calls this function.
+//
+func Worker(mapf func(string, string) []KeyValue,
+	reducef func(string, []string) string) {
+	task := MRTaskArgs{}
+	reply := MRTaskReply{}
+	call("Master.RequestTask", &task, &reply)
+	Map(mapf, reply)
+	// Reduce(reducef)
+	// call("Master.Done")
+}
+
+func Map(mapf func(string, string) []KeyValue, reply MRTaskReply) {
+
+	// get the file at the filepath
+	file, err := os.Open(reply.FilePath)
+	if err != nil {
+		log.Fatalf("cannot read %v", reply.FilePath)
+	}
+
+	// read all the contents of the input file
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", reply.FilePath)
+	}
+	file.Close()
+
+	// Pass the contents to mapf
+	// accumulate the intermediate Map output
+	kvarr := mapf(reply.FilePath, string(content))
+
+	// sort the array of key and values
+	sort.Sort(ByKey(kvarr))
+
+	// create a temporary file
+	tempFileName := fmt.Sprintf("temp-%v", reply.MapTaskID)
+	temp, err := ioutil.TempFile("./", tempFileName)
+	if err != nil {
+		log.Fatalf("cannot create file")
+	}
+
+	// store k/v pairs in an encoding that can be read by reduce tasks
+	// encode the temporary file
+	enc := json.NewEncoder(temp)
+
+	// write the array of objects as a json object
+	for _, kv := range kvarr {
+		fmt.Println(kv)
+		reduceTaskNum := chooseReduceTaskNumber(kv, reply.ReduceTaskID)
+		fmt.Println(reduceTaskNum)
+		enc.Encode(&kv)
+	}
+
+	// atomically write the encoded data into an intermediate map file
+	intermediateFileName := fmt.Sprintf("mr-%v-%v", reply.MapTaskID, reply.ReduceTaskID)
+	os.Rename(temp.Name(), intermediateFileName)
 }
 
 //
@@ -40,91 +101,8 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-//
-// main/mrworker.go calls this function.
-//
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
-	
-	// create a task
-	task := MRTaskArgs{}
-	reply := MRTaskReply{}
-
-	// send an RPC request to the master for a task and wait for a reply
-	call("Master.RequestTask", &task, &reply)
-
-	// if the type of task is to map over the contents of a file
-	if (reply.ToMap == true) {
-		// get the file at the filepath
-		file, err := os.Open(reply.FilePath)
-		if err != nil {
-			log.Fatalf("cannot read %v", reply.FilePath)
-		}
-		// open the file and read all the contents into one byte array
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", reply.FilePath)
-		}
-		file.Close()
-		kvarr := mapf(reply.FilePath, string(content))
-
-		// sort the array of key and values
-		sort.Sort(ByKey(kvarr))
-
-		fmt.Println(reply.ID)
-		fmt.Println(reply.FilePath)
-
-		// create a temporary file
-		tempFileName := fmt.Sprintf("mr-%v-", reply.ID)
-		temp, err := ioutil.TempFile("./", tempFileName)
-		if err != nil {
-			log.Fatalf("cannot create file")
-		}
-
-		// write to that file
-		// an array of objects that contain key:value strings
-
-		// store k/v pairs in an encoding that can be read by reduce tasks
-		// encode the temporary file
-		enc := json.NewEncoder(temp)
-
-		// write the array of objects as a json object
-		for _, kv := range kvarr {
-			enc.Encode(&kv)
-		}
-		os.Rename(temp.Name(), "")
-	}
-
-	// if the type of task is to reduce the contents of a file
-	// call reduce
-	// if (reply.ToReduce == true) {
-	// 	var numOccurrencesOfWord = reducef(reply.FilePath,)
-	// }
-	
-	// do we send the result of the task to the master?
-}
-
-//
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+func chooseReduceTaskNumber(kv KeyValue, nReduce int) int {
+	return ihash(kv.Key) % nReduce
 }
 
 //
@@ -149,3 +127,35 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	fmt.Println(err)
 	return false
 }
+
+
+// func Reduce(reducef func(string, []string) string) {
+// 	getIntermediateFile()
+
+// 	// read the contents in as a data format
+	
+// 	// reduce over the contents
+// 	output := reducef(intermediate[i].Key, values)
+// 	// place the reduced values into a file
+// 	fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+
+// 	// Remove the intermediate file from the directory
+// 	os.Remove(filePath)
+// }
+
+// func getIntermediateFile() {
+// 	// read an intermediate file from the directory
+// 	pwdFiles, err := ioutil.ReadDir(".")
+// 	check(err)
+
+// 	// check if there is an intermediate file that we can perform a reduce on
+// 	for _, file := range pwdFiles {
+// 		match, err := regexp.MatchString(`mr-\d`, "mr-")
+// 		check(err)
+// 		if (match) {
+// 			filePath = file.Name()
+// 			break;
+// 		}
+// 	}
+// }
