@@ -8,9 +8,16 @@ type MRTaskArgs struct {}
 
 type MRTaskReply struct {
 	MapTaskID int
-	ReduceTaskID int
-	FilePath string
-	ToMap, ToReduce bool
+  ReduceTaskID int
+  NReduce int
+  File string
+  TaskType taskType
+}
+
+type MRTaskUpdate struct {
+	Files []string
+	MapTaskID int
+	Success bool
 }
 
 // Cook up a unique-ish UNIX-domain socket name
@@ -18,7 +25,7 @@ type MRTaskReply struct {
 // Can't use the current directory since
 // Athena AFS doesn't support UNIX-domain sockets.
 func masterSock() string {
-	s := "/var/tmp/824-mr-"
-	s += strconv.Itoa(os.Getuid())
-	return s
+  s := "/var/tmp/824-mr-"
+  s += strconv.Itoa(os.Getuid())
+  return s
 }

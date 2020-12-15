@@ -6,89 +6,119 @@ import "net/rpc"
 import "hash/fnv"
 import "io/ioutil"
 import "os"
-import "sort"
+// import "sort"
 import "encoding/json"
 
 //
 // Map functions return a slice of KeyValue.
 //
 type KeyValue struct {
-	Key   string
-	Value string
+  Key   string
+  Value string
 }
 
 // Sort implementation for sorting by key
 type ByKey []KeyValue
 
 func (a ByKey) Len() int {
-	return len(a)
+  return len(a)
 }
 
 func (a ByKey) Swap(i, j int) {
-	a[i], a[j] = a[j], a[i]
+  a[i], a[j] = a[j], a[i]
 }
 
 func (a ByKey) Less(i, j int) bool {
-	return a[i].Key < a[j].Key
+  return a[i].Key < a[j].Key
 }
 
-//
 // main/mrworker.go calls this function.
-//
 func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
-	task := MRTaskArgs{}
-	reply := MRTaskReply{}
-	call("Master.RequestTask", &task, &reply)
-	Map(mapf, reply)
-	// Reduce(reducef)
-	// call("Master.Done")
+  reducef func(string, []string) string) {
+  args := MRTaskArgs{}
+  reply := MRTaskReply{}
+
+  call("Master.RequestTask", &args, &reply)
+  switch reply.TaskType {
+  case MapTask:
+    _ = ExecuteMapTask(mapf, reply)
+ 	case ReduceTask:
+ 		// ExecuteReduceTask(reducef, reply)
+
+ 	default:
+ 		fmt.Println("No task assigned")
+  }
 }
 
-func Map(mapf func(string, string) []KeyValue, reply MRTaskReply) {
+func ExecuteMapTask(mapf func(string, string) []KeyValue, task MRTaskReply) bool {
+  update := MRTaskUpdate{}
+  reply := MRTaskReply{}
 
-	// get the file at the filepath
-	file, err := os.Open(reply.FilePath)
-	if err != nil {
-		log.Fatalf("cannot read %v", reply.FilePath)
-	}
+  contents := getFileContents(task.File)
 
-	// read all the contents of the input file
-	content, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Fatalf("cannot read %v", reply.FilePath)
-	}
-	file.Close()
+  // Pass the contents to mapf and accumulate the intermediate Map output
+  kvarr := mapf(task.File, string(contents))
 
-	// Pass the contents to mapf
-	// accumulate the intermediate Map output
-	kvarr := mapf(reply.FilePath, string(content))
+  // Partition contents into n-many Reduce "Buckets" for Reduce Workers to consume
+  kvBuckets := Partition(kvarr, task.NReduce)
 
-	// sort the array of key and values
-	sort.Sort(ByKey(kvarr))
+  // write the map output to disk
+  fileNames := createIntermediateMRFiles(kvBuckets, task.MapTaskID)
+  update.Files = fileNames
+  update.MapTaskID = task.MapTaskID
 
-	// create a temporary file
-	tempFileName := fmt.Sprintf("temp-%v", reply.MapTaskID)
-	temp, err := ioutil.TempFile("./", tempFileName)
-	if err != nil {
-		log.Fatalf("cannot create file")
-	}
+  result := call("Master.UpdateTask", &update, &reply)
 
-	// store k/v pairs in an encoding that can be read by reduce tasks
-	// encode the temporary file
-	enc := json.NewEncoder(temp)
+  if !result {
+  	fmt.Println("error sending intermediate files to master")
+  }
 
-	// write the array of objects as a json object
-	for _, kv := range kvarr {
-		fmt.Println(kv)
-		reduceTaskNum := chooseReduceTaskNumber(kv, reply.ReduceTaskID)
-		fmt.Println(reduceTaskNum)
-		enc.Encode(&kv)
-	}
+  return result
+}
 
-	// atomically write the encoded data into an intermediate map file
-	intermediateFileName := fmt.Sprintf("mr-%v-%v", reply.MapTaskID, reply.ReduceTaskID)
-	os.Rename(temp.Name(), intermediateFileName)
+func Partition(kvarr []KeyValue, nReduce int) [][]KeyValue {
+  kvBuckets := make([][]KeyValue, nReduce)
+  for _, kv := range kvarr {
+    reduceTaskNum := ihash(kv.Key) % nReduce
+    kvBuckets[reduceTaskNum] = append(kvBuckets[reduceTaskNum], kv)
+  }
+  return kvBuckets
+}
+
+// 
+// Create intermediate files for reduce workers to read from
+// each bucket signifies an intermediate file that must be created 
+// for each array in the partition
+// create a temp file
+// encode instances of a kv to json objects
+// iterate over each kv pair
+// encode the kv pair to json
+// and append each kv pair to the file
+// 
+func createIntermediateMRFiles(kvBuckets [][]KeyValue, mapTaskID int) []string {
+	var fileNames []string
+
+  for reduceTaskNum, kvarr := range kvBuckets {
+  	// if there are kv pairs for the reduce task number : INSPECT (do we need this check?)
+  	if (len(kvarr) > 0) {
+  		// create a temporary file
+	  	tempFileName := fmt.Sprintf("mr-%v-%v-", mapTaskID, reduceTaskNum)
+	    temp, err := ioutil.TempFile("./", tempFileName)
+	    check(err)
+	    // write the kv pairs to the temp file
+	    enc := json.NewEncoder(temp)
+	    for _, kv := range kvarr {
+	    	err := enc.Encode(&kv)
+	    	check(err)
+	    }
+
+      // atomically write the encoded data into an intermediate map file
+		  intermediateFileName := fmt.Sprintf("mr-%v-%v", mapTaskID,reduceTaskNum)
+		  os.Rename(temp.Name(), intermediateFileName)
+		  fileNames = append(fileNames, intermediateFileName)
+	  }
+  }
+  return fileNames
 }
 
 //
@@ -96,13 +126,25 @@ func Map(mapf func(string, string) []KeyValue, reply MRTaskReply) {
 // task number for each KeyValue emitted by Map.
 //
 func ihash(key string) int {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return int(h.Sum32() & 0x7fffffff)
+  h := fnv.New32a()
+  h.Write([]byte(key))
+  return int(h.Sum32() & 0x7fffffff)
 }
 
-func chooseReduceTaskNumber(kv KeyValue, nReduce int) int {
-	return ihash(kv.Key) % nReduce
+// 
+// open file and read contents into memory
+// 
+func getFileContents(fileName string) []byte {
+	file, err := os.Open(fileName)
+  if err != nil {
+    log.Fatalf("cannot read %v", fileName)
+  }
+  contents, err := ioutil.ReadAll(file)
+  if err != nil {
+    log.Fatalf("cannot read %v", fileName)
+  }
+  file.Close()
+  return contents
 }
 
 //
@@ -111,51 +153,17 @@ func chooseReduceTaskNumber(kv KeyValue, nReduce int) int {
 // returns false if something goes wrong.
 //
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := masterSock()
-	c, err := rpc.DialHTTP("unix", sockname)
-	if err != nil {
-		log.Fatal("dialing:", err)
-	}
-	defer c.Close()
-
-	err = c.Call(rpcname, args, reply)
-	if err == nil {
-		return true
-	}
-
-	fmt.Println(err)
-	return false
+  // c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+  sockname := masterSock()
+  c, err := rpc.DialHTTP("unix", sockname)
+  if err != nil {
+    log.Fatal("dialing:", err)
+  }
+  defer c.Close()
+  err = c.Call(rpcname, args, reply)
+  if err == nil {
+    return true
+  }
+  fmt.Println(err)
+  return false
 }
-
-
-// func Reduce(reducef func(string, []string) string) {
-// 	getIntermediateFile()
-
-// 	// read the contents in as a data format
-	
-// 	// reduce over the contents
-// 	output := reducef(intermediate[i].Key, values)
-// 	// place the reduced values into a file
-// 	fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
-
-// 	// Remove the intermediate file from the directory
-// 	os.Remove(filePath)
-// }
-
-// func getIntermediateFile() {
-// 	// read an intermediate file from the directory
-// 	pwdFiles, err := ioutil.ReadDir(".")
-// 	check(err)
-
-// 	// check if there is an intermediate file that we can perform a reduce on
-// 	for _, file := range pwdFiles {
-// 		match, err := regexp.MatchString(`mr-\d`, "mr-")
-// 		check(err)
-// 		if (match) {
-// 			filePath = file.Name()
-// 			break;
-// 		}
-// 	}
-// }

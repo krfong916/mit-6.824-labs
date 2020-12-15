@@ -1,94 +1,108 @@
 package mr
 
-import "fmt"
+// import "fmt"
 import "log"
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
-const (
-	TO_BE_PROCESSED = iota // 0
-	PROCESSED // 1
-)
-
-type File struct {
-	MapTaskID int
-	ReduceTaskID int
-	Name string
-	State int
-}
 
 type Master struct {
-	FilesDict map[string]File
+  MapTasks []Task
+  ReduceTasks [][]string
+  NReduce int
+  HasFinishedJob bool
 }
+
+// INSPECT - do we need a task type if it's only for a map task?
+// how can we extend for reduce tasks as well? we need an array
+type Task struct {
+  ID int
+  File string
+  State int
+}
+
+const (
+  TO_BE_PROCESSED = iota
+  PROCESSING
+  PROCESSED
+)
 
 // Your code here -- RPC handlers for the worker to call.
 
-func (m *Master) RequestTask(args *MRTaskArgs, reply *MRTaskReply) error {
-	// selects a file for the worker
-	hasFileToProcess := m.selectFile(reply)
+func (m* Master) RequestTask(args *MRTaskArgs, reply *MRTaskReply) error {  
+  if (len(m.MapTasks) != 0) {
+  	m.assignMapTask(reply)
+  	return nil
+  }
 
-	// if there are no files that need reducing, then we're done?
-	if (hasFileToProcess == false) {
-		m.Done()
-	}
+  if (len(m.ReduceTasks) != 0) {
+  	m.assignReduceTask(reply)
+  	return nil
+  }
 
+  // if there are no more map or reduce tasks to process
+  // change job state from pending to finished
+  m.HasFinishedJob = true
+
+  return nil
+}
+
+func (m* Master) assignMapTask(reply *MRTaskReply) {
+  for _, mapTask := range m.MapTasks {
+    if (mapTask.State == TO_BE_PROCESSED) {
+      // assign information to execute a map task to the worker
+      reply.MapTaskID = mapTask.ID
+      reply.File = mapTask.File
+      reply.TaskType = MapTask
+      reply.NReduce = m.NReduce
+
+      // change the map task state to processing
+      // therefore, the task cannot be assigned to another worker
+      mapTask.State = PROCESSING
+      break;
+    }
+  }
+}
+
+func (m* Master) assignReduceTask(reply *MRTaskReply) {
+  // for _, reduceTask := range m.ReduceTasks {
+  //   if (reduceTask.State == TO_BE_PROCESSED) {
+  //     // assign the map task to the worker
+  //     reply.ReduceTaskID = reduceTask.ID
+  //     reply.File = reduceTask.File
+  //     reply.TaskType = ReduceTask
+
+  //     // change the map task state to processing
+  //     // therefore, the task cannot be assigned to another worker
+  //     reduceTask.State = PROCESSING
+  //     break;
+  //   }
+  // }
+}
+
+func (m* Master) UpdateTask(args *MRTaskUpdate, reply *MRTaskUpdate) error {
+	m.MapTasks[args.MapTaskID].State = PROCESSED
+	reply.Success = true
+	m.ReduceTasks[args.MapTaskID] = args.Files
 	return nil
-}
-
-func (m* Master) selectFile(reply *MRTaskReply) (bool) {
-	// return the first file that needs to be mapped/processed
-	var filePath string
-	var mapID, reduceID int
-	var hasFileToBeMapped bool
-
-	for _, file := range m.FilesDict {
-		if (file.State == TO_BE_PROCESSED) {
-			fmt.Println("Map task number: ", file.MapTaskID)
-			fmt.Println("Reduce task number: ", file.ReduceTaskID)
-			mapID = file.MapTaskID
-			reduceID = file.ReduceTaskID
-			filePath = file.Name
-			hasFileToBeMapped = true
-		}
-	}	
-
-	// assigns the file
-	// and the operation to perform on the file to the task obj
-	reply.MapTaskID = mapID
-	reply.ReduceTaskID = reduceID
-	reply.FilePath = filePath
-	reply.ToMap = hasFileToBeMapped
-	
-	// there are no files left for processing
-	if (hasFileToBeMapped == true) {
-		return true
-	} else {
-		return false
-	}
-}
-
-func check(e error) {
-	if e != nil {
-		panic(e)
-	}
 }
 
 //
 // start a thread that listens for RPCs from worker.go
 //
 func (m *Master) server() {
-	rpc.Register(m)
-	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
-	sockname := masterSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
-	if e != nil {
-		log.Fatal("listen error:", e)
-	}
-	go http.Serve(l, nil)
+  rpc.Register(m)
+  rpc.HandleHTTP()
+  //l, e := net.Listen("tcp", ":1234")
+  sockname := masterSock()
+  os.Remove(sockname)
+  l, e := net.Listen("unix", sockname)
+  if e != nil {
+    log.Fatal("listen error:", e)
+  }
+  go http.Serve(l, nil)
 }
 
 //
@@ -96,12 +110,12 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
+  // ret := true
 
-	// Your code here.
+  // Your code here.
+  // return ret
 
-
-	return ret
+  return m.HasFinishedJob
 }
 
 //
@@ -109,20 +123,23 @@ func (m *Master) Done() bool {
 // main/mrmaster.go calls this function.
 // nReduce is the number of reduce tasks to use.
 //
-func MakeMaster(files []string, nReduce int) *Master {
-	fmt.Println("nReduce: ", nReduce)
-	// create instance of master 
-	m := Master{}
-	
-	// initialize file state dictionary
-	m.FilesDict = make(map[string]File)
+func MakeMaster(tasks []string, nReduce int) *Master {
+  // create instance of master 
+  m := Master{}
+  
+  // initialize map and reduce dictionaries
+  m.MapTasks = make([]Task, len(tasks))
+  m.ReduceTasks = make([][]string, nReduce)
 
-	// place files in dictionary
-	for i, f := range files {
-		newFile := File{MapTaskID: i, ReduceTaskID: nReduce, State: TO_BE_PROCESSED, Name: f}
-		m.FilesDict[f] = newFile
-	}
+  // initialize number of files to output
+  m.NReduce = nReduce
 
-	m.server()
-	return &m
+  // place tasks in map dictionary, key = file name, value = task
+  for i, file := range tasks {
+    mapTask := Task{ID: i, State: TO_BE_PROCESSED, File: file}
+    m.MapTasks[i] = mapTask
+  }
+
+  m.server()
+  return &m
 }
