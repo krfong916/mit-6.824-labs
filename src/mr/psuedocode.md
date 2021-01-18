@@ -40,12 +40,12 @@ The more Map tasks there are, the more effort is made by the Master to keep trac
 
 ### 10/15
 
-[x] write a common file
-[x] send intermediate files and the map_task_id to master
-have master
-remove map_task_id from the slice
-insert reduce task in the list, along with the list of files
-check code into github
+- [x] write a common file
+- [x] send intermediate files and the map_task_id to master
+      have master
+      remove map_task_id from the slice
+      insert reduce task in the list, along with the list of files
+- [x] check code into github
 
 synchronous reduce task
 after all map have been completed

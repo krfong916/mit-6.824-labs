@@ -12,12 +12,14 @@ type MRTaskReply struct {
   NReduce int
   File string
   TaskType taskType
+  Files []string
 }
 
 type MRTaskUpdate struct {
-	Files []string
-	MapTaskID int
-	Success bool
+	Files 			[]string
+	MapTaskID 	int
+	Success 		bool
+	TaskType taskType
 }
 
 // Cook up a unique-ish UNIX-domain socket name

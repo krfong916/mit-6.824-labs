@@ -6,8 +6,9 @@ import "net/rpc"
 import "hash/fnv"
 import "io/ioutil"
 import "os"
-// import "sort"
+import "sort"
 import "encoding/json"
+import "strings"
 
 //
 // Map functions return a slice of KeyValue.
@@ -33,41 +34,60 @@ func (a ByKey) Less(i, j int) bool {
 }
 
 // main/mrworker.go calls this function.
-func Worker(mapf func(string, string) []KeyValue,
-  reducef func(string, []string) string) {
-  args := MRTaskArgs{}
-  reply := MRTaskReply{}
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+  for {
+  	response, reply := requestTask()
+  	
+  	if (response == false) {
+  		terminateProcess()
+  	}
 
-  call("Master.RequestTask", &args, &reply)
-  switch reply.TaskType {
-  case MapTask:
-    _ = ExecuteMapTask(mapf, reply)
- 	case ReduceTask:
- 		// ExecuteReduceTask(reducef, reply)
-
- 	default:
- 		fmt.Println("No task assigned")
+  	switch reply.TaskType {
+	  case MapTask:
+	    _ = executeMapTask(mapf, reply)
+	 	case ReduceTask:
+	 		_ = executeReduceTask(reducef, reply)
+	 	default:
+	 		fmt.Println("No task assigned")
+	  }
   }
 }
 
-func ExecuteMapTask(mapf func(string, string) []KeyValue, task MRTaskReply) bool {
-  update := MRTaskUpdate{}
+func requestTask() (bool, MRTaskReply) {
+	args := MRTaskArgs{}
+  reply := MRTaskReply{}
+  rpcReq := call("Master.RequestTask", &args, &reply)
+  return rpcReq, reply
+}
+
+func terminateProcess() {
+	os.Exit(3)
+}
+
+func executeMapTask(mapf func(string, string) []KeyValue, task MRTaskReply) bool {
+  
   reply := MRTaskReply{}
 
   contents := getFileContents(task.File)
 
-  // Pass the contents to mapf and accumulate the intermediate Map output
+  // Pass the contents to the map function and accumulate the intermediate output
   kvarr := mapf(task.File, string(contents))
 
-  // Partition contents into n-many Reduce "Buckets" for Reduce Workers to consume
-  kvBuckets := Partition(kvarr, task.NReduce)
+  // Partition contents into n-many "Buckets" for Reduce Workers to consume
+  kvBuckets := partition(kvarr, task.NReduce)
 
-  // write the map output to disk
+  // Write the map output to disk
   fileNames := createIntermediateMRFiles(kvBuckets, task.MapTaskID)
+
+  // Send an task update to the master
+  update := MRTaskUpdate{}
   update.Files = fileNames
   update.MapTaskID = task.MapTaskID
+  update.TaskType = task.TaskType
+  
+  call("Master.UpdateMapTask", &update, &reply)
 
-  result := call("Master.UpdateTask", &update, &reply)
+  result := call("Master.UpdateMapTask", &update, &reply)
 
   if !result {
   	fmt.Println("error sending intermediate files to master")
@@ -76,7 +96,7 @@ func ExecuteMapTask(mapf func(string, string) []KeyValue, task MRTaskReply) bool
   return result
 }
 
-func Partition(kvarr []KeyValue, nReduce int) [][]KeyValue {
+func partition(kvarr []KeyValue, nReduce int) [][]KeyValue {
   kvBuckets := make([][]KeyValue, nReduce)
   for _, kv := range kvarr {
     reduceTaskNum := ihash(kv.Key) % nReduce
@@ -147,6 +167,66 @@ func getFileContents(fileName string) []byte {
   return contents
 }
 
+func executeReduceTask(reducef func(string, []string) string, task MRTaskReply) bool {
+	var kva []KeyValue
+	outputFile := fmt.Sprintf("mr-out-%v", task.ReduceTaskID)
+
+	// iterate over the list of intermediate files to reduce
+	for _, file := range task.Files {
+		// open the file
+		file, err := os.Open(file)
+		if err != nil {
+	    log.Fatalf("cannot read %v", file)
+	  }
+	  // read the contents of the encoded file back
+		dec := json.NewDecoder(file)
+		// convert to KeyValue pairs
+		for {
+	    var kv KeyValue
+	    if err := dec.Decode(&kv); err != nil {
+	      break
+	    }
+	    kva = append(kva, kv)
+	  }
+	  file.Close()
+	}
+	
+	sort.Sort(ByKey(kva))
+	
+	dict := make(map[string][]string)
+	for _, pair := range kva {
+		values, ok := dict[pair.Key]
+		if (ok) {
+			dict[pair.Key] = append(values, pair.Value)
+		} else {
+			dict[pair.Key] = []string{pair.Value}
+		}
+	}
+
+	of, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
+	if err != nil {
+		log.Fatalf("cannot create or open file %v", outputFile)
+	}
+	defer of.Close()
+	for key, value := range dict {
+		acc := reducef(key, value)
+		uK := strings.ToUpper(key)
+		res := fmt.Sprintf("%s %s\n", uK, acc)
+		if _, err := of.WriteString(res); err != nil {
+    	log.Println(err)
+		}
+	}
+	// create a file with the following format MR-OUT-task.ID, this will be the output file
+	// parse over the list of files
+	// for each file
+	//  read the contents into memory
+	// after reading the contents into memory, sort the contents
+	// call reducef with the sorted contents
+	// write the string output to the file
+
+	return true
+}
+
 //
 // send an RPC request to the master, wait for the response.
 // usually returns true.
@@ -167,3 +247,4 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
   fmt.Println(err)
   return false
 }
+	
