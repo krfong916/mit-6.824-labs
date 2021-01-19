@@ -8,7 +8,6 @@ import "io/ioutil"
 import "os"
 import "sort"
 import "encoding/json"
-import "strings"
 
 //
 // Map functions return a slice of KeyValue.
@@ -36,32 +35,32 @@ func (a ByKey) Less(i, j int) bool {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
   for {
-  	response, reply := requestTask()
-  	
-  	if (response == false) {
-  		terminateProcess()
-  	}
+    response, reply := requestTask()
+    
+    if (response == false) {
+      terminateProcess()
+    }
 
-  	switch reply.TaskType {
-	  case MapTask:
-	    _ = executeMapTask(mapf, reply)
-	 	case ReduceTask:
-	 		_ = executeReduceTask(reducef, reply)
-	 	default:
-	 		fmt.Println("No task assigned")
-	  }
+    switch reply.TaskType {
+    case MapTask:
+      _ = executeMapTask(mapf, reply)
+    case ReduceTask:
+      _ = executeReduceTask(reducef, reply)
+    case ExitTask:
+      terminateProcess()
+    }
   }
 }
 
 func requestTask() (bool, MRTaskReply) {
-	args := MRTaskArgs{}
+  args := MRTaskArgs{}
   reply := MRTaskReply{}
   rpcReq := call("Master.RequestTask", &args, &reply)
   return rpcReq, reply
 }
 
 func terminateProcess() {
-	os.Exit(3)
+  os.Exit(3)
 }
 
 func executeMapTask(mapf func(string, string) []KeyValue, task MRTaskReply) bool {
@@ -77,11 +76,10 @@ func executeMapTask(mapf func(string, string) []KeyValue, task MRTaskReply) bool
   kvBuckets := partition(kvarr, task.NReduce)
 
   // Write the map output to disk
-  fileNames := createIntermediateMRFiles(kvBuckets, task.MapTaskID)
+  createIntermediateMRFiles(kvBuckets, task.MapTaskID)
 
   // Send an task update to the master
   update := MRTaskUpdate{}
-  update.Files = fileNames
   update.MapTaskID = task.MapTaskID
   update.TaskType = task.TaskType
   
@@ -90,7 +88,7 @@ func executeMapTask(mapf func(string, string) []KeyValue, task MRTaskReply) bool
   result := call("Master.UpdateMapTask", &update, &reply)
 
   if !result {
-  	fmt.Println("error sending intermediate files to master")
+    fmt.Println("error sending intermediate files to master")
   }
 
   return result
@@ -115,30 +113,23 @@ func partition(kvarr []KeyValue, nReduce int) [][]KeyValue {
 // encode the kv pair to json
 // and append each kv pair to the file
 // 
-func createIntermediateMRFiles(kvBuckets [][]KeyValue, mapTaskID int) []string {
-	var fileNames []string
-
+func createIntermediateMRFiles(kvBuckets [][]KeyValue, mapTaskID int) {
   for reduceTaskNum, kvarr := range kvBuckets {
-  	// if there are kv pairs for the reduce task number : INSPECT (do we need this check?)
-  	if (len(kvarr) > 0) {
-  		// create a temporary file
-	  	tempFileName := fmt.Sprintf("mr-%v-%v-", mapTaskID, reduceTaskNum)
-	    temp, err := ioutil.TempFile("./", tempFileName)
-	    check(err)
-	    // write the kv pairs to the temp file
-	    enc := json.NewEncoder(temp)
-	    for _, kv := range kvarr {
-	    	err := enc.Encode(&kv)
-	    	check(err)
-	    }
+    // create a temporary file
+    tempFileName := fmt.Sprintf("mr-%v-%v-", mapTaskID, reduceTaskNum)
+    temp, err := ioutil.TempFile("./", tempFileName)
+    check(err)
+    // write the kv pairs to the temp file
+    enc := json.NewEncoder(temp)
+    for _, kv := range kvarr {
+      err := enc.Encode(&kv)
+      check(err)
+    }
 
-      // atomically write the encoded data into an intermediate map file
-		  intermediateFileName := fmt.Sprintf("mr-%v-%v", mapTaskID,reduceTaskNum)
-		  os.Rename(temp.Name(), intermediateFileName)
-		  fileNames = append(fileNames, intermediateFileName)
-	  }
+    // atomically write the encoded data into an intermediate map file
+    intermediateFileName := fmt.Sprintf("mr-%v-%v", mapTaskID,reduceTaskNum)
+    os.Rename(temp.Name(), intermediateFileName)
   }
-  return fileNames
 }
 
 //
@@ -155,7 +146,7 @@ func ihash(key string) int {
 // open file and read contents into memory
 // 
 func getFileContents(fileName string) []byte {
-	file, err := os.Open(fileName)
+  file, err := os.Open(fileName)
   if err != nil {
     log.Fatalf("cannot read %v", fileName)
   }
@@ -168,63 +159,55 @@ func getFileContents(fileName string) []byte {
 }
 
 func executeReduceTask(reducef func(string, []string) string, task MRTaskReply) bool {
-	var kva []KeyValue
-	outputFile := fmt.Sprintf("mr-out-%v", task.ReduceTaskID)
+  kva := make([]KeyValue, 0)
 
-	// iterate over the list of intermediate files to reduce
-	for _, file := range task.Files {
-		// open the file
-		file, err := os.Open(file)
-		if err != nil {
-	    log.Fatalf("cannot read %v", file)
-	  }
-	  // read the contents of the encoded file back
-		dec := json.NewDecoder(file)
-		// convert to KeyValue pairs
-		for {
-	    var kv KeyValue
-	    if err := dec.Decode(&kv); err != nil {
-	      break
-	    }
-	    kva = append(kva, kv)
-	  }
-	  file.Close()
-	}
-	
-	sort.Sort(ByKey(kva))
-	
-	dict := make(map[string][]string)
-	for _, pair := range kva {
-		values, ok := dict[pair.Key]
-		if (ok) {
-			dict[pair.Key] = append(values, pair.Value)
-		} else {
-			dict[pair.Key] = []string{pair.Value}
-		}
-	}
+  // iterate over the list of intermediate files to reduce
 
-	of, err := os.OpenFile(outputFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0664)
-	if err != nil {
-		log.Fatalf("cannot create or open file %v", outputFile)
-	}
-	defer of.Close()
-	for key, value := range dict {
-		acc := reducef(key, value)
-		uK := strings.ToUpper(key)
-		res := fmt.Sprintf("%s %s\n", uK, acc)
-		if _, err := of.WriteString(res); err != nil {
-    	log.Println(err)
-		}
-	}
-	// create a file with the following format MR-OUT-task.ID, this will be the output file
-	// parse over the list of files
-	// for each file
-	//  read the contents into memory
-	// after reading the contents into memory, sort the contents
-	// call reducef with the sorted contents
-	// write the string output to the file
+  for i := 0; i < task.NMapTasks; i++ {
+    intermFile := fmt.Sprintf("mr-%v-%v", i, task.ReduceTaskID)
+    // open the file
+    iFile, err := os.Open(intermFile)
+    if err != nil {
+      log.Fatalf("cannot read %v", iFile)
+    }
+    // read the contents of the encoded file back
+    dec := json.NewDecoder(iFile)
+    // convert to KeyValue pairs
+    for {
+      var kv KeyValue
+      if err := dec.Decode(&kv); err != nil {
+        break
+      }
+      kva = append(kva, kv)
+    }
+  }
+  
+  sort.Sort(ByKey(kva))
+  
+  // create an output file to write reduced output to
+  outputFile := fmt.Sprintf("mr-out-%d", task.ReduceTaskID)
+  ofile, _ := os.Create(outputFile)
 
-	return true
+  // call Reduce on each distinct key in kva ([] KeyValue)
+  i := 0
+  for i < len(kva) {
+    j := i + 1
+    for j < len(kva) && kva[j].Key == kva[i].Key {
+      j++
+    }
+    values := []string{}
+    for k := i; k < j; k++ {
+      values = append(values, kva[k].Value)
+    }
+    output := reducef(kva[i].Key, values)
+
+    fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+    i = j
+  }
+
+  ofile.Close()
+  return true
 }
 
 //
@@ -247,4 +230,4 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
   fmt.Println(err)
   return false
 }
-	
+  

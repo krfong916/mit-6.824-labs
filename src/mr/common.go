@@ -6,6 +6,7 @@ type taskType string
 const (
 	MapTask taskType = "MAP"
 	ReduceTask = "REDUCE"
+	ExitTask = "EXIT"
 )
 
 func check(err error) {

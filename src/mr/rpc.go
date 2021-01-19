@@ -8,17 +8,16 @@ type MRTaskArgs struct {}
 
 type MRTaskReply struct {
 	MapTaskID int
-  ReduceTaskID int
-  NReduce int
-  File string
-  TaskType taskType
-  Files []string
+	ReduceTaskID int
+	NReduce int
+	NMapTasks int
+	File string
+	TaskType taskType
 }
 
 type MRTaskUpdate struct {
-	Files 			[]string
-	MapTaskID 	int
-	Success 		bool
+	MapTaskID int
+	Success bool
 	TaskType taskType
 }
 
