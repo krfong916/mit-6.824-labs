@@ -7,18 +7,18 @@ import "strconv"
 type MRTaskArgs struct {}
 
 type MRTaskReply struct {
-	MapTaskID int
-	ReduceTaskID int
-	NReduce int
-	NMapTasks int
-	File string
-	TaskType taskType
+  MapTaskID int
+  ReduceTaskID int
+  NReduce int
+  NMapTasks int
+  File string
+  TaskType taskType
 }
 
 type MRTaskUpdate struct {
-	MapTaskID int
-	Success bool
-	TaskType taskType
+  MapTaskID int
+  Success bool
+  TaskType taskType
 }
 
 // Cook up a unique-ish UNIX-domain socket name
