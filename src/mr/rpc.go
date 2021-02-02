@@ -1,24 +1,27 @@
 package mr
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 // Add your RPC definitions here.
-type MRTaskArgs struct {}
+type MRTaskArgs struct{}
 
 type MRTaskReply struct {
-  MapTaskID int
-  ReduceTaskID int
-  NReduce int
-  NMapTasks int
-  File string
-  TaskType taskType
+	MapTaskID    int
+	ReduceTaskID int
+	NReduce      int
+	NMapTasks    int
+	File         string
+	TaskType     taskType
 }
 
 type MRTaskUpdate struct {
-  MapTaskID int
-  Success bool
-  TaskType taskType
+	MapTaskID    int
+	ReduceTaskID int
+	Success      bool
+	TaskType     taskType
 }
 
 // Cook up a unique-ish UNIX-domain socket name
@@ -26,7 +29,7 @@ type MRTaskUpdate struct {
 // Can't use the current directory since
 // Athena AFS doesn't support UNIX-domain sockets.
 func masterSock() string {
-  s := "/var/tmp/824-mr-"
-  s += strconv.Itoa(os.Getuid())
-  return s
+	s := "/var/tmp/824-mr-"
+	s += strconv.Itoa(os.Getuid())
+	return s
 }
