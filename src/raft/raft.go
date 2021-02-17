@@ -44,6 +44,13 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+// each Entry contains the term in which it was created
+// and a command for the state machine
+type Entry struct {
+	term    int
+	command int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -57,9 +64,19 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+
+	// Persistent state on all servers
 	currentTerm int
 	votedFor    int
+	log         []Entry
+
+	// Volatile state on all servers
 	commitIndex int
+	lastApplied int
+
+	// Volatile state on leaders (reinitialized after election)
+	nextIndex  []int // For each server, index of the next log entry to send to that server
+	matchIndex []int // For each server, index of the highest log entry known to be replicated on server
 }
 
 // return currentTerm and whether this server
@@ -116,10 +133,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
+	Term         int // Candidate's term
+	CandidateId  int // Candidate requesting vote
+	LastLogIndex int // Index of Candidate's last log entry
+	LastLogTerm  int // Term of Candidate's last entry
 }
 
 //
@@ -127,9 +144,8 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int
-	VoteGranted bool
+	Term        int  // CurrentTerm, for Candidate to update itself
+	VoteGranted bool // True means Candidate received vote
 }
 
 //
@@ -204,7 +220,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []int
+	Entries      []Entry
 	LeaderCommit int
 }
 
@@ -237,8 +253,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm // ?
 }
 
-func heartbeat(entries []int) bool {
-	return len(entries) == 0
+func heartbeat(log []Entry) bool {
+	return len(log) == 0
 }
 
 //
@@ -305,6 +321,23 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	// for {
+	// iterate over peers and check the last time we have heard from them
+	for i := 0; i < len(rf.peers); i++ {
+		// send a RequestVoteRPC if we haven't heard from the peer in awhile
+		// if we hear of a reply, then update the time that we heard from the peer
+		go func(peer int) {
+
+			lastEntryIdx := len(rf.log) - 1
+			args := RequestVoteArgs{rf.currentTerm, me, lastEntryIdx, rf.log[lastEntryIdx].term}
+			reply := RequestVoteReply{}
+			ok := rf.sendRequestVote(peer, &args, &reply)
+			if ok {
+
+			}
+		}(i)
+	}
+	// }
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
