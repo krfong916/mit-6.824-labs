@@ -1,3 +1,35 @@
+Initialization
+
+- The master is given tasks by the application/calling code. In this case, the master is given tasks via a test script
+- The master records the tasks and labels their type
+- Many workers are spawned, they run indefinitely until the master either tells them to stop or the master is unresponsive?
+
+Distributing Tasks
+
+- Workers asks the master for work in parallel
+- When a master receives a request, it must lock on the data so that it ensures it hands the correct task to a worker (to prevent races!!)
+- The master sets a timer for the task to be completed. If the master doesn't hear from the worker responsible for completing the task within the time limit, the master locks and updates the task status to be distributed to a new worker
+
+Completing Tasks
+
+- When a worker completes a task, it notifies the master. Many workers may be notifying the master at the same time, so a worker thread will acquire a lock (?) and execute the RPC call (that is a part of the API package of the master?). Anyways, the master will lock and do the following. It will check if the reply from the worker is within the time limit of its timer. (So there must be a worker id and task associated?)
+
+- master assigns a task, mark the id of the worker, the task that its responsible for, and the time to complete that task
+- a worker will have that information
+
+Suppose master assigns Worker1 TaskA at 12:00
+Worker1 has until 12:01 to complete TaskA
+Worker1 halts
+The master revokes the responsibility of TaskA from Worker1 at 12:01 and reassigns the task to Worker2 at 12:03
+Worker2 has until 12:05 to complete TaskA
+Worker1 wakes up, completes the TaskA and replies to the master at 12:04
+
+Master receives an update that TaskA is complete (from the wrong worker)
+
+Should the master invalidate this update and only wait for Worker2's response?
+
+Should we assume intermediate data under the MapReduce framework is deterministic? And does this assumption affect our decision?
+
 # psuedocode
 
 Roles:
