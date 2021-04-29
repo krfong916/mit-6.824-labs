@@ -10,7 +10,8 @@ import "sync"
 // i refers to the outer scope
 // we mutate the identifier i
 
-// by the time we send an rpc and here back from its call
+// by the time the go routine actually executes the declared code
+// (we send an rpc and here back from its call)
 // the for loop has already incremented i
 // This will result in non-determinism
 
