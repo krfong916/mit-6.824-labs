@@ -70,6 +70,7 @@ type Raft struct {
 	randomizedElectionTimeout time.Duration
 }
 
+// this timeout is the average time between failures for a single-server
 const electionTimeout = 500 * time.Millisecond
 
 const (
@@ -78,16 +79,24 @@ const (
 	LEADER    = "LEADER"
 )
 
-func (rf *Raft) convertToFollower() {}
+func (rf *Raft) convertToFollower() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.state = FOLLOWER
+	rf.timeLastHeardFromLeader = time.now() // could be a source of headache
+}
 
 func (rf *Raft) convertToCandidate() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.currentTerm += 1
 	rf.state = CANDIDATE
+	rf.timeLastHeardFromLeader = time.Now() // reset the election timeout
 }
 
-func (rf *Raft) convertToLeader() {}
+func (rf *Raft) convertToLeader() {
+
+}
 
 // return currentTerm and whether this server
 // believes it is the leader.
@@ -144,64 +153,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	// long-running goroutine, will most likely call kill() or killed()
 
+	staleRequestVote := false
 	rf.mu.Lock()
-
-	term, isLeader := rf.GetState()
-
-	rf.mu.Unlock()
-
-	if isLeader {
-		rf.performLeaderElection()
-	} else {
-		rf.handleRequestVote()
-	}
-}
-
-// caller implementation here: invoked by candidate to gather votes
-// call request vote on other raft peers in parallel
-// change state when we get replies
-// see go-concurrency condvar vote-count-2-3-4
-func (rf *Raft) performLeaderElection() {
-	count := 0
-	finished := 0
-	cond := sync.NewCond(&rf.mu)
-
-	for i := 0; i < len(rf.peers); i++ {
-		go func(peer int) {
-			voteGranted := rf.sendRequestVote(peer, args, reply)
-
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
-			if voteGranted {
-				count++
-			}
-			// when the reply comes back
-			// wake up those who are waiting for our response
-			cond.Broadcast()
-		}(i)
-	}
-
-	// check if we've won the election
-	rf.mu.Lock()
-	for count < len(rf.peers)/2 && finished != 10 {
-		cond.Wait()
-	}
-
-	if count >= 5 {
-		// lock and update to leader state, send heartbeats to establish leadership
-	} else {
-
-		//
-	}
-}
-
-//
-// receiver implementation
-//
-func (rf *Raft) handleRequestVote() {
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
+	}
+	rf.mu.Unlock()
+	if staleRequestVote {
 		return
 	}
 
@@ -210,8 +169,10 @@ func (rf *Raft) handleRequestVote() {
 	// or both, the candidate's id and log
 	// is as @ least up-to-date as this peer's log
 	//
-	if rf.votedFor == 0 {
+	if rf.votedFor == 0 && rf.currentTerm <= args.Term {
 		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+		rf.currentTerm = args.LastLogTerm
 	}
 
 	//
@@ -222,6 +183,74 @@ func (rf *Raft) handleRequestVote() {
 	if rf.currentTerm < args.LastLogTerm {
 		rf.currentTerm = args.LastLogTerm
 	}
+}
+
+// caller implementation here: invoked by candidate to gather votes
+// call request vote on other raft peers in parallel
+// change state when we get replies
+// see go-concurrency condvar vote-count-2-3-4
+func (rf *Raft) performLeaderElection() {
+	rf.convertToCandidate()
+
+	args := &RequestVoteArgs{}
+	reply := &RequestVoteReply{}
+
+	args.Term = rf.currentTerm
+	args.CandidateId = rf.me
+	args.Term = rf.currentTerm
+	args.Term = rf.currentTerm
+
+	// we vote for ourself
+	// and initialize a term variable updated on peer response
+	rf.mu.Lock()
+	rf.votedFor = rf.me
+	largestTermAmongstPeers := rf.Term
+	rf.mu.Unlock()
+	count := 1
+	finished := 1
+
+	cond := sync.NewCond(&rf.mu)
+
+	/* How do we detect if a follower's term is greater than our term? */
+	for i := 0; i < len(rf.peers); i++ {
+		go func(peer int) {
+			nodeReceivedMessage := rf.sendRequestVote(peer, args, reply)
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			// our candidate is out of date, update our term
+			if nodeReceivedMessage && reply.Term > largestTermAmongstPeers {
+				largestTermAmongstPeers = reply.Term
+			}
+			if nodeReceivedMessage && reply.VoteGranted {
+				count++
+			}
+			finished++
+
+			// when the reply comes back
+			// wake up those who are waiting for our response
+			cond.Broadcast()
+		}(i)
+	}
+
+	// check if we've won the election, if not, chill, continue sending requests
+	rf.mu.Lock()
+	for count < len(rf.peers)/2 && finished != 10 {
+		cond.Wait()
+	}
+
+	if count >= 5 && largestTermAmongstPeers == rf.Term {
+		rf.convertToLeader()
+		rf.establishAuthority()
+		// lock and update to leader state, send heartbeats to establish leadership
+	} else {
+		// ?
+	}
+	rf.Term = largestTermAmongstPeers
+	rf.mu.Unlock()
+}
+
+func establishAuthority() {
+
 }
 
 //
@@ -278,14 +307,36 @@ type AppendEntriesReply struct {
  */
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// if the append entries message is stale, disregard
+	// we may need to
+	leaderIsBehind := false
+	rf.mu.Lock()
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
+	}
+	rf.mu.Unlock()
+	if leaderIsBehind {
 		return
 	}
 
+	// IS THIS SECTION NECESSARY?
+	// if the append entries message is from a leader and we ASSUME to be leader or candidate, step down
+	nodeIsOutOfDate := false
+	rf.mu.Lock()
+	_, isLeader = rf.GetState()
+	if (isLeader || rf.state == CANDIDATE) && args.Term > rf.currentTerm {
+		rf.convertToFollower()
+		rf.currentTerm = args.Term
+		// do we restart our election timeout?
+	}
+	rf.mu.Unlock()
+	if nodeIsOutOfDate {
+		return
+	}
+
+	// check if this is a heartbeat mechanism
 	if heartbeat(args.Entries) {
-		rf.handleHeartbeat(args)
+		rf.recognizeLeader(args)
 	}
 }
 
@@ -304,11 +355,12 @@ func heartbeat(log []Entry) bool {
  *
  * @param  args we need the leader's term from the heartbeat object
  */
-func (rf *Raft) handleHeartbeat(args *AppendEntriesArgs) {
+func (rf *Raft) recognizeLeader(args *AppendEntriesArgs) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.timeLastHeardFromLeader = time.Now()
 	rf.currentTerm = args.Term
+	rf.votedFor = -1
 }
 
 //
@@ -382,7 +434,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 
 	// election timeout
-	rf.createRandomizedSleepTimeout()
+	rf.assignRandomizedSleepTimeout()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -408,18 +460,10 @@ func (rf *Raft) kickOffElectionTimeout() {
 
 			rf.mu.Unlock()
 
-			if initialState || timeElapsed >= electionTimeout {
-				rf.convertToCandidate()
-
-				args := &RequestVoteArgs{}
-				reply := &RequestVoteReply{}
-
-				args.Term = rf.currentTerm
-				args.CandidateId = rf.me
-				args.Term = rf.currentTerm
-				args.Term = rf.currentTerm
-
-				rf.RequestVote(args, reply)
+			// assumes we're candidate and the election timeout has elapsed so we must begin a new election
+			// this could be a place for bugs/headache in the future
+			if rf.state == CANDIDATE || initialState || timeElapsed >= electionTimeout {
+				rf.performLeaderElection()
 			}
 		}()
 
@@ -427,7 +471,7 @@ func (rf *Raft) kickOffElectionTimeout() {
 	}
 }
 
-func (rf *Raft) createRandomizedSleepTimeout() {
+func (rf *Raft) assignRandomizedSleepTimeout() {
 	rand.Seed(time.Now().UnixNano())
 	min := 150
 	max := 300

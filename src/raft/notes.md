@@ -1,3 +1,13 @@
+## Initialization of the Raft cluster
+
+Raft peers will be initialized and each will connect to the network
+
+Each Raft peer will be initialized with a timeout - is this randomized? Or is the sleep and wakeup to check the randomized bit?
+
+A peer will wakeup and start a leader election
+
+## Leader election
+
 how often will our leader send heartbeats
 we don't know what our election timeout should be
 
