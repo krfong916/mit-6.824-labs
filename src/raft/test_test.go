@@ -27,7 +27,7 @@ func TestInitialElection2A(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): initial election")
-	// DPrintf("Leader election has begun")
+
 	// is a leader elected?
 	cfg.checkOneLeader()
 
@@ -43,7 +43,7 @@ func TestInitialElection2A(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
-		fmt.Printf("warning: term changed even though there were no failures")
+		fmt.Printf("warning: term changed even though there were no failures\n")
 	}
 
 	// there should still be a leader.
@@ -58,31 +58,36 @@ func TestReElection2A(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): election after network failure")
-
 	leader1 := cfg.checkOneLeader()
-
+	DPrintf("Test: %v (leader1) found\n", leader1)
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
+	DPrintf("Test: %v (leader1) disconnects\n", leader1)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
 	cfg.connect(leader1)
+	DPrintf("Test: %v (leader1) connects\n", leader1)
 	leader2 := cfg.checkOneLeader()
-
+	DPrintf("Test: %v (leader2) found", leader2)
 	// if there's no quorum, no leader should
 	// be elected.
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
+	DPrintf("Test: %v (leader2) disconnects\n", leader2)
+	DPrintf("Test: %v disconnects\n", (leader2+1)%servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
+	DPrintf("Test: %v rejoins\n", (leader2+1)%servers)
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
+	DPrintf("Test: %v (leader2) connects\n", leader2)
 	cfg.checkOneLeader()
 
 	cfg.end()
