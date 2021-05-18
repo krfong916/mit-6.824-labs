@@ -17,11 +17,6 @@ type ApplyMsg struct {
   CommandIndex int
 }
 
-type Entry struct {
-  Term    int
-  Command int
-}
-
 type Raft struct {
   mu        sync.Mutex          // Lock to protect shared access to this peer's state
   peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -30,10 +25,16 @@ type Raft struct {
   dead      int32               // set by Kill()
 
   // Persistent state on all servers
+  currentTerm int
+  votedFor    int
+  log         []Entry
+
+  // volatile state on all servers
+  electionTimeout time.Time // Election timeout
+  commitIndex     int       // index of the highest log entry known to be committed (init to 0, increases monotonically)
+  nextIndex       []int     // index of the next log entry to send to that server (initialized to leader last log index + 1)
+  matchIndex      []int     // index of the highest log entry known ot be replicated on server (initialized to 0, increases monotonically)
   state           string
-  currentTerm     int
-  votedFor        int
-  electionTimeout time.Time
 }
 
 const (
@@ -49,24 +50,28 @@ func (rf *Raft) readPersist(data []byte) {
   }
 }
 
+//
+// the service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. if this
+// server isn't the leader, returns false. otherwise start the
+// agreement and return immediately. there is no guarantee that this
+// command will ever be committed to the Raft log, since the leader
+// may fail or lose an election. even if the Raft instance has been killed,
+// this function should return gracefully.
+//
+// the first return value is the index that the command will appear at
+// if it's ever committed. the second return value is the current
+// term. the third return value is true if this server believes it is
+// the leader.
+//
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
   index := -1
   term := -1
   isLeader := true
 
-  // Your code here (2B).
+  term, isLeader = rf.GetState()
 
   return index, term, isLeader
-}
-
-func (rf *Raft) Kill() {
-  atomic.StoreInt32(&rf.dead, 1)
-  // Your code here, if desired.
-}
-
-func (rf *Raft) killed() bool {
-  z := atomic.LoadInt32(&rf.dead)
-  return z == 1
 }
 
 func (rf *Raft) GetState() (int, bool) {
@@ -77,6 +82,16 @@ func (rf *Raft) GetState() (int, bool) {
     isLeader = true
   }
   return rf.currentTerm, isLeader
+}
+
+func (rf *Raft) Kill() {
+  atomic.StoreInt32(&rf.dead, 1)
+  // Your code here, if desired.
+}
+
+func (rf *Raft) killed() bool {
+  z := atomic.LoadInt32(&rf.dead)
+  return z == 1
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -110,7 +125,7 @@ func (rf *Raft) convertToCandidate() {
 func (rf *Raft) setElectionTimeout() {
   interm := rand.NewSource(time.Now().UnixNano())
   random := rand.New(interm)
-  timeout := time.Duration(random.Int63()%300) * time.Millisecond
+  timeout := time.Duration(200+random.Int63()%300) * time.Millisecond
   rf.electionTimeout = time.Now().Add(timeout)
 }
 
@@ -228,8 +243,12 @@ func (rf *Raft) performLeaderElection() {
     color.New(color.FgRed).Printf("Candidate[%v]: stepping down to follower\n", rf.me)
     rf.convertToFollower(higherTerm)
   }
-
-  if (votes > len(rf.peers)/2 || finished == len(rf.peers)) && rf.state == CANDIDATE && higherTerm == rf.currentTerm {
+  fmt.Printf("Candidate[%v] has %v votes", rf.me, votes)
+  /* FIX: in the presence of partial network partition, and we are the sole peer, we must assume leadership in order to make progress
+     however, our election handler does not explicitly handle this case
+  */
+  // if (votes > len(rf.peers)/2 || finished == len(rf.peers)) && rf.state == CANDIDATE && higherTerm == rf.currentTerm {
+  if votes > len(rf.peers)/2 && rf.state == CANDIDATE && higherTerm == rf.currentTerm {
     color.New(color.FgCyan).Printf("Candidate[%v]: Won Election!\n", rf.me)
     rf.convertToLeader()
   }
@@ -314,3 +333,10 @@ func (rf *Raft) establishAuthority() {
     }
   }
 }
+
+/*
+  - retry indefinetly
+  - decrement index on retry
+  - receive an entry
+  - determine when to commit an entry (entries)
+*/
