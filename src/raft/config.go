@@ -16,6 +16,7 @@ import (
   "testing"
 
   "../labrpc"
+  "github.com/fatih/color"
 
   crand "crypto/rand"
   "encoding/base64"
@@ -177,6 +178,7 @@ func (cfg *config) start1(i int) {
         // ignore other types of ApplyMsg
       } else {
         v := m.Command
+        // DPrintf("v %v", v)
         cfg.mu.Lock()
         for j := 0; j < len(cfg.logs); j++ {
           if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
@@ -374,6 +376,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
     }
 
     cfg.mu.Lock()
+    // DPrintf("Log[%v]: %v", i, cfg.logs[i])
     cmd1, ok := cfg.logs[i][index]
     cfg.mu.Unlock()
 
@@ -448,6 +451,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
       cfg.mu.Unlock()
       if rf != nil {
         index1, _, ok := rf.Start(cmd)
+        // DPrintf("[Result] index: %v, _: %v, ok: %v", index1, uh, ok)
         if ok {
           index = index1
           break
@@ -460,7 +464,9 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
       // submitted our command; wait a while for agreement.
       t1 := time.Now()
       for time.Since(t1).Seconds() < 2 {
+        // DPrintf("index: %v", index)
         nd, cmd1 := cfg.nCommitted(index)
+        // DPrintf("nd: %v, cmd1: %v, cmd: %v", nd, cmd1, cmd)
         if nd > 0 && nd >= expectedServers {
           // committed
           if cmd1 == cmd {
@@ -485,7 +491,8 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 // print the Test message.
 // e.g. cfg.begin("Test (2B): RPC counts aren't too high")
 func (cfg *config) begin(description string) {
-  fmt.Printf("%s ...\n", description)
+  color.New(color.FgGreen).Printf("%s ...\n", description)
+  // fmt.Printf("%s ...\n", description)
   cfg.t0 = time.Now()
   cfg.rpcs0 = cfg.rpcTotal()
   cfg.bytes0 = cfg.bytesTotal()
