@@ -50,6 +50,10 @@ exit status 1
 FAIL  _/Users/kyle/go/6.824/src/raft  6.080s
 ```
 
+### Findings
+
+- We need to break from attempting to commit entries once we have committed on all servers, we only break when we are no longer leader
+
 ## Leader Backs Up Quickly Over Incorrect Follower Logs
 
 ```

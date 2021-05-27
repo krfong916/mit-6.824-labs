@@ -1,13 +1,13 @@
 package raft
 
 import (
-  "fmt"
+  "github.com/fatih/color"
 )
 
 type Entry struct {
-  Term int // The leader's term that requested this Entry to be replicated
-  // Index   int         // The Entry's index in the leader's log
+  Term    int         // The leader's term that requested this Entry to be replicated
   Command interface{} // The client command to apply to the peer's state machine
+  // Index   int         // The Entry's index in the leader's log
 }
 
 type RequestVoteArgs struct {
@@ -46,14 +46,13 @@ type AppendEntriesReply struct {
  */
 /* If we reject the request vote via "Rule For All Servers", is there an update to apply to our peer using lastlogindex/term? */
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-  // color.New(color.FgGreen).Printf("Peer[%d]: received a request vote from %d\n", rf.me, args.CandidateId)
-
   ///////////////////////////////////////////////////////////////////////////
   // if we have a stale request vote update the candidate's terms, disregard
-  //     the request
+  //   the request
   ///////////////////////////////////////////////////////////////////////////
   staleTerm := false
   rf.mu.Lock()
+  color.New(color.FgCyan).Printf("(%v)[%d][%v]: received a request vote from %d at term: %v\n", rf.state, rf.me, rf.currentTerm, args.CandidateId, args.Term)
   if args.Term < rf.currentTerm {
     reply.Term = rf.currentTerm
     reply.VoteGranted = false
@@ -65,12 +64,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   }
 
   ///////////////////////////////////////////////////////////////////////////
-  // rule for all servers
+  // Rules for all servers
+  // step down and reset timer
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if args.Term > rf.currentTerm {
-    // color.New(color.FgYellow).Printf("Peer[%d]: %v (our term), %v (received term), stepping down from %v to Follower\n", rf.me, rf.currentTerm, args.Term, rf.state)
-    // step down and reset timer
+    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
@@ -89,11 +88,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) || rf.candidateIsMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
-    // color.New(color.FgGreen).Printf("Peer[%d]: granting a vote to %d\n", rf.me, args.CandidateId)
-    rf.setElectionTimeout() // when we grant a vote to a peer we MUST reset our election timeout
+    color.New(color.FgCyan).Printf("(%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
+    // rf.setElectionTimeout() // when we grant a vote to a peer we MUST reset our election timeout
+    rf.convertToFollower(args.Term)
     rf.votedFor = args.CandidateId
     reply.VoteGranted = true
-    reply.Term = args.Term
+    reply.Term = rf.currentTerm
   } else {
     reply.VoteGranted = false
     reply.Term = args.Term
@@ -111,14 +111,16 @@ func (rf *Raft) candidateIsMoreUpToDate(candidateIdx int, candidateTerm int) boo
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-  // color.New(color.FgRed).Printf("Peer[%v]: received heartbeat from Leader[%v]\n", rf.me, args.LeaderId)
+
   ///////////////////////////////////////////////////////////////////////////
   // Rule 1
   // if the append entries message is stale, disregard
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
+  color.New(color.FgGreen).Printf("(%v)[%v][%v]: received an append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
   isStale := false
   if args.Term < rf.currentTerm {
+    color.New(color.FgRed).Printf("(%v)[%v][%v]: received a STALE append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
     reply.Term = rf.currentTerm
     reply.Success = false
     isStale = true
@@ -129,12 +131,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   }
 
   ///////////////////////////////////////////////////////////////////////////
-  // rule for all servers
+  // Rule for all servers
+  // step down and reset timer
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
-  // if args.Term > rf.currentTerm {
-  if args.Term >= rf.currentTerm {
-    // step down and reset timer
+  if args.Term > rf.currentTerm {
+    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+    rf.convertToFollower(args.Term)
+  }
+  rf.mu.Unlock()
+
+  ///////////////////////////////////////////////////////////////////////////
+  // Section 5.2 Additionally, a candidate or follower may receive an AE RPC
+  // from another server claiming to be leader. If the leader's term is at
+  // least as large as the candidate's then the candidate recognizes the
+  // leader as legitmate and steps down
+  ///////////////////////////////////////////////////////////////////////////
+  rf.mu.Lock()
+  if rf.state == CANDIDATE && args.Term >= rf.currentTerm {
+    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
@@ -142,8 +157,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   // Rule 2
   // if the previous log index does not exist within our log, return false
-  //     (the leader will decrement the prevlogindex and resend the updated
-  //     list of entries)
+  //   (the leader will decrement the prevlogindex and resend the updated
+  //   list of entries)
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   defer rf.mu.Unlock()
@@ -160,11 +175,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   }
 
   ///////////////////////////////////////////////////////////////////////////
-  // follower
   // Check if this is a heartbeat mechanism
-  //     If so, the set the flag. The leader uses the result of AppendEntries
-  //     to help decide whether or not should commit an entry.
-  //     if heartbeat(args.Entries) && args.Term >= rf.currentTerm {
+  //   If so, the set the flag. The leader uses the result of AppendEntries
+  //   to help decide whether or not should commit an entry.
+  //   if heartbeat(args.Entries) && args.Term >= rf.currentTerm {
   ///////////////////////////////////////////////////////////////////////////
   isHeartbeat := false
   if heartbeat(args.Entries) {
@@ -180,12 +194,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   //     prev-log-term matches this peer's term.
   ///////////////////////////////////////////////////////////////////////////
   if isHeartbeat {
-    // color.New(color.FgYellow).Printf("Peer[%d]: (%v) recognizes heartbeat from Leader[%v]\n", rf.me, rf.state, args.LeaderId)
+    color.New(color.FgYellow).Printf("(%v)[%v][%d]: recognizes heartbeat from Leader[%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
     rf.convertToFollower(args.Term)
     reply.Success = true
-    reply.Term = args.Term
+    reply.Term = rf.currentTerm
   } else {
-    // color.New(color.FgGreen).Printf("Peer[%d]: replicating entries from Leader[%v]\n", rf.me, args.LeaderId)
+    // color.New(color.FgGreen).Printf("(%v)[%d]: replicating entries from Leader[%v]\n", rf.me, args.LeaderId)
     ///////////////////////////////////////////////////////////////////////////
     // Rule 3
     // We've now established that this peer's log DOES contain a prev log
@@ -199,9 +213,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
     for ; leaderIdx < len(args.Entries) && peerIdx < len(rf.log); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
       if rf.entriesConflict(args.Entries, leaderIdx, peerIdx) {
-        fmt.Printf("truncate log before: %v\n", rf.log)
+        color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
         rf.truncateLog(peerIdx)
-        fmt.Printf("truncate log after: %v\n", rf.log)
+        color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
         break
       }
     }
@@ -237,33 +251,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   //     peer's commit index.
   ///////////////////////////////////////////////////////////////////////////
   if args.LeaderCommit > rf.commitIndex {
-
     rf.commitIndex = minOf(args.LeaderCommit, len(rf.log)-1)
-    // fmt.Printf("Peer[%v]: leaderCommit: %v, commit index: %v\n", rf.me, args.LeaderCommit, rf.commitIndex)
+    // fmt.Printf("(%v)[%v]: leaderCommit: %v, commit index: %v\n", rf.me, args.LeaderCommit, rf.commitIndex)
     // go rf.applyEntry()
 
     // rf.commitIndex = args.LeaderCommit
     // if len(rf.log)-1 < rf.commitIndex {
     //   rf.commitIndex = len(rf.log) - 1
     // }
+    go rf.applyEntry()
   }
-  rf.applyEntry()
-  // color.New(color.FgGreen).Printf("Peer[%d]: log%v\n", rf.me, rf.log)
+  // color.New(color.FgGreen).Printf("(%v)[%d]: log%v\n", rf.me, rf.log)
   return
 }
 
 func heartbeat(log []Entry) bool {
   return len(log) == 0
-}
-
-func minOf(args ...int) int {
-  min := args[0]
-  for _, i := range args {
-    if i < min {
-      min = i
-    }
-  }
-  return min
 }
 
 /* Same index but different terms */

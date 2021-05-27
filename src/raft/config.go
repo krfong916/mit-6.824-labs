@@ -262,7 +262,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-  // fmt.Printf("disconnect(%d)\n", i)
+  fmt.Printf("disconnect(%d)\n", i)
 
   cfg.connected[i] = false
 
@@ -306,6 +306,7 @@ func (cfg *config) setlongreordering(longrel bool) {
 // check that there's exactly one leader.
 // try a few times in case re-elections are needed.
 func (cfg *config) checkOneLeader() int {
+  fmt.Println("COL")
   for iters := 0; iters < 10; iters++ {
     ms := 450 + (rand.Int63() % 100)
     time.Sleep(time.Duration(ms) * time.Millisecond)
@@ -314,12 +315,12 @@ func (cfg *config) checkOneLeader() int {
     for i := 0; i < cfg.n; i++ {
       if cfg.connected[i] {
         if term, leader := cfg.rafts[i].GetState(); leader {
-          // fmt.Printf("term: %v, isLeader: %v, id: %v\n", term, leader, i)
+          DPrintf("COL: leader %v, term: %v", i, term)
           leaders[term] = append(leaders[term], i)
         }
       }
     }
-    // fmt.Println(leaders)
+
     lastTermWithLeader := -1
     for term, leaders := range leaders {
       if len(leaders) > 1 {
@@ -329,8 +330,10 @@ func (cfg *config) checkOneLeader() int {
         lastTermWithLeader = term
       }
     }
-
+    DPrintf("COL: hello print this shit %v", leaders)
     if len(leaders) != 0 {
+      DPrintf("COL: lastTermWithLeader %v", leaders[lastTermWithLeader])
+      DPrintf("COL: return something %v", leaders[lastTermWithLeader][0])
       return leaders[lastTermWithLeader][0]
     }
   }
