@@ -87,9 +87,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   //     is more up to date
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
-  if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) || rf.candidateIsMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
+  if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.candidateIsMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
     color.New(color.FgCyan).Printf("(%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
-    // rf.setElectionTimeout() // when we grant a vote to a peer we MUST reset our election timeout
     rf.convertToFollower(args.Term)
     rf.votedFor = args.CandidateId
     reply.VoteGranted = true
@@ -179,69 +178,60 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   //   If so, the set the flag. The leader uses the result of AppendEntries
   //   to help decide whether or not should commit an entry.
   //   if heartbeat(args.Entries) && args.Term >= rf.currentTerm {
-  ///////////////////////////////////////////////////////////////////////////
-  isHeartbeat := false
-  if heartbeat(args.Entries) {
-    isHeartbeat = true
-  }
-
-  // fmt.Printf("AppendEntries[%v]:\n leaderCommit: %v\n prevlogindex: %v\n prevlogterm: %v\n -----------\n currentTerm: %v\n commitIndex: %v\n", rf.me, args.LeaderCommit, args.PrevLogIndex, args.PrevLogTerm, rf.currentTerm, rf.commitIndex)
-
-  ///////////////////////////////////////////////////////////////////////////
   // Respond to the heartbeat mechanism
   //     We are safe to reply success because we've performed two checks
   //     above^: if this peer's log contains the prev-log-index, and if the
   //     prev-log-term matches this peer's term.
   ///////////////////////////////////////////////////////////////////////////
-  if isHeartbeat {
+  if heartbeat(args.Entries) {
     color.New(color.FgYellow).Printf("(%v)[%v][%d]: recognizes heartbeat from Leader[%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
-    rf.convertToFollower(args.Term)
-    reply.Success = true
-    reply.Term = rf.currentTerm
-  } else {
-    // color.New(color.FgGreen).Printf("(%v)[%d]: replicating entries from Leader[%v]\n", rf.me, args.LeaderId)
-    ///////////////////////////////////////////////////////////////////////////
-    // Rule 3
-    // We've now established that this peer's log DOES contain a prev log
-    //     index. Our goal now is to satisfy the Log Matching Property.
-    // If an existing entry in this peers' log conflicts with an entry in
-    //     entries[] (same index, but different term), delete the existing
-    //     entry and all that follow it
-    ///////////////////////////////////////////////////////////////////////////
-    peerIdx := args.PrevLogIndex + 1
-    leaderIdx := 0
-
-    for ; leaderIdx < len(args.Entries) && peerIdx < len(rf.log); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
-      if rf.entriesConflict(args.Entries, leaderIdx, peerIdx) {
-        color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
-        rf.truncateLog(peerIdx)
-        color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
-        break
-      }
-    }
-
-    ///////////////////////////////////////////////////////////////////////////
-    // Rule 4
-    // We've resolved all conflicting entries that may exist between the leader
-    //     and this peer. Now, append any remaining entries to this peer.
-    //     i.e. Tack on the new entries that the leader wants us to replicate.
-    // We choose the method of making a new slice and copying the contents over
-    //     because we want to free the current slice/underlying array that is
-    //     being referenced by rf.log, in order for this outdated log to be
-    //     garbage collected. Granted, this method has a linear complexity,
-    //     we can make optimizations in the future if necessary
-    ///////////////////////////////////////////////////////////////////////////
-    if leaderIdx <= len(args.Entries)-1 {
-      logWithReplicatedEntries := make([]Entry, len(rf.log)+len(args.Entries)-leaderIdx)
-      copy(logWithReplicatedEntries, rf.log)
-      rf.log = logWithReplicatedEntries
-      for ; leaderIdx < len(args.Entries); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
-        rf.log[peerIdx] = args.Entries[leaderIdx]
-      }
-    }
+    rf.setElectionTimeout()
     reply.Success = true
     reply.Term = rf.currentTerm
   }
+
+  ///////////////////////////////////////////////////////////////////////////
+  // Rule 3
+  // We've now established that this peer's log DOES contain a prev log
+  //     index. Our goal now is to satisfy the Log Matching Property.
+  // If an existing entry in this peers' log conflicts with an entry in
+  //     entries[] (same index, but different term), delete the existing
+  //     entry and all that follow it
+  ///////////////////////////////////////////////////////////////////////////
+  peerIdx := args.PrevLogIndex + 1
+  leaderIdx := 0
+
+  for ; leaderIdx < len(args.Entries) && peerIdx < len(rf.log); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
+    if rf.entriesConflict(args.Entries, leaderIdx, peerIdx) {
+      color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+      rf.truncateLog(peerIdx)
+      color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+      break
+    }
+  }
+
+  ///////////////////////////////////////////////////////////////////////////
+  // Rule 4
+  // We've resolved all conflicting entries that may exist between the leader
+  //     and this peer. Now, append any remaining entries to this peer.
+  //     i.e. Tack on the new entries that the leader wants us to replicate.
+  // We choose the method of making a new slice and copying the contents over
+  //     because we want to free the current slice/underlying array that is
+  //     being referenced by rf.log, in order for this outdated log to be
+  //     garbage collected. Granted, this method has a linear complexity,
+  //     we can make optimizations in the future if necessary
+  ///////////////////////////////////////////////////////////////////////////
+  if leaderIdx <= len(args.Entries)-1 {
+    logWithReplicatedEntries := make([]Entry, len(rf.log)+len(args.Entries)-leaderIdx)
+    copy(logWithReplicatedEntries, rf.log)
+    rf.log = logWithReplicatedEntries
+    for ; leaderIdx < len(args.Entries); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
+      rf.log[peerIdx] = args.Entries[leaderIdx]
+    }
+  }
+  reply.Success = true
+  reply.Term = rf.currentTerm
+
   ///////////////////////////////////////////////////////////////////////////
   // Rule 5
   // Update the commit index of the follower.
@@ -252,16 +242,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   if args.LeaderCommit > rf.commitIndex {
     rf.commitIndex = minOf(args.LeaderCommit, len(rf.log)-1)
-    // fmt.Printf("(%v)[%v]: leaderCommit: %v, commit index: %v\n", rf.me, args.LeaderCommit, rf.commitIndex)
-    // go rf.applyEntry()
-
-    // rf.commitIndex = args.LeaderCommit
-    // if len(rf.log)-1 < rf.commitIndex {
-    //   rf.commitIndex = len(rf.log) - 1
-    // }
     go rf.applyEntry()
   }
-  // color.New(color.FgGreen).Printf("(%v)[%d]: log%v\n", rf.me, rf.log)
   return
 }
 
