@@ -1,9 +1,10 @@
 package raft
 
+import "github.com/fatih/color"
+
 type Entry struct {
   Term    int         // The leader's term that requested this Entry to be replicated
   Command interface{} // The client command to apply to the peer's state machine
-  // Index   int         // The Entry's index in the leader's log
 }
 
 type RequestVoteArgs struct {
@@ -28,8 +29,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-  Success bool // True if follower contained entry matching log index and term
-  Term    int  // The current term for the leader to update itself
+  Success       bool // True if follower contained entry matching log index and term
+  Term          int  // The current term for the leader to update itself
+  ConflictIndex int  // The conflicting entry's index in the peer's log to send back to the leader. If no conflicting index is present, send back the len(log)
+  ConflictTerm  int  // The term of the conflicting entry
 }
 
 /**
@@ -40,7 +43,6 @@ type AppendEntriesReply struct {
  * @param  args
  * @param  reply
  */
-/* If we reject the request vote via "Rule For All Servers", is there an update to apply to our peer using lastlogindex/term? */
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   // if we have a stale request vote update the candidate's terms, disregard
@@ -48,7 +50,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   staleTerm := false
   rf.mu.Lock()
-  // color.New(color.FgCyan).Printf("(%v)[%d][%v]: received a request vote from %d at term: %v\n", rf.state, rf.me, rf.currentTerm, args.CandidateId, args.Term)
+  color.New(color.FgCyan).Printf("(%v)[%d][%v]: received a request vote from %d at term: %v\n", rf.state, rf.me, rf.currentTerm, args.CandidateId, args.Term)
   if args.Term < rf.currentTerm {
     reply.Term = rf.currentTerm
     reply.VoteGranted = false
@@ -65,7 +67,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if args.Term > rf.currentTerm {
-    // color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
@@ -84,9 +86,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.candidateIsMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
-    // color.New(color.FgCyan).Printf("(%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
+    color.New(color.FgCyan).Printf("(%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
     rf.setElectionTimeout()
-    // rf.convertToFollower(args.Term)
     rf.votedFor = args.CandidateId
     reply.VoteGranted = true
     reply.Term = rf.currentTerm
@@ -98,8 +99,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   return
 }
 
-/* determine which of the two logs are more up to date
-   this peer's or the leaders */
+/**
+ * determine which of the two logs are more up to date
+ * this peer's or the leaders
+ */
 func (rf *Raft) candidateIsMoreUpToDate(candidateIdx int, candidateTerm int) bool {
   peerIdx := len(rf.log) - 1
   peerTerm := rf.log[len(rf.log)-1].Term
@@ -113,10 +116,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   // if the append entries message is stale, disregard
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
-  // color.New(color.FgGreen).Printf("(%v)[%v][%v]: received an append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+  color.New(color.FgGreen).Printf("(%v)[%v][%v]: received an append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
   isStale := false
   if args.Term < rf.currentTerm {
-    // color.New(color.FgRed).Printf("(%v)[%v][%v]: received a STALE append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+    color.New(color.FgRed).Printf("(%v)[%v][%v]: received a STALE append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
     reply.Term = rf.currentTerm
     reply.Success = false
     isStale = true
@@ -132,7 +135,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if args.Term > rf.currentTerm {
-    // color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
@@ -145,28 +148,36 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if rf.state == CANDIDATE && args.Term >= rf.currentTerm {
-    // color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
 
   ///////////////////////////////////////////////////////////////////////////
   // Rule 2
-  // if the previous log index does not exist within our log, return false
-  //   (the leader will decrement the prevlogindex and resend the updated
-  //   list of entries)
+  // Credit to Jon Gjengset @jonhoo
+  //   https://thesquareplanet.com/blog/students-guide-to-raft/
+  //   Accelerated log backtracking optimization:
+  //   If the previous log index does not exist within our log, the leader will
+  //     update prevlogindex with conflictIndex and resend the updated list of
+  //     entries
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   defer rf.mu.Unlock()
   if args.PrevLogIndex >= len(rf.log) {
     reply.Success = false
     reply.Term = rf.currentTerm
+    reply.ConflictIndex = len(rf.log)
     return
   }
 
   if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
     reply.Success = false
     reply.Term = rf.currentTerm
+    reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+    for firstOcc := args.PrevLogIndex; rf.log[firstOcc].Term == reply.ConflictTerm && firstOcc >= 0; firstOcc-- {
+      reply.ConflictIndex = firstOcc
+    }
     return
   }
 
@@ -176,12 +187,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   //   to help decide whether or not should commit an entry.
   //   if heartbeat(args.Entries) && args.Term >= rf.currentTerm {
   // Respond to the heartbeat mechanism
-  //     We are safe to reply success because we've performed two checks
-  //     above^: if this peer's log contains the prev-log-index, and if the
-  //     prev-log-term matches this peer's term.
+  //   We are safe to reply success because we've performed two checks
+  //   above^: if this peer's log contains the prev-log-index, and if the
+  //   prev-log-term matches this peer's term.
   ///////////////////////////////////////////////////////////////////////////
   if heartbeat(args.Entries) {
-    // color.New(color.FgYellow).Printf("(%v)[%v][%d]: recognizes heartbeat from Leader[%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+    color.New(color.FgYellow).Printf("(%v)[%v][%d]: recognizes heartbeat from Leader[%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
     rf.setElectionTimeout()
     reply.Success = true
     reply.Term = rf.currentTerm
@@ -190,19 +201,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   // Rule 3
   // We've now established that this peer's log DOES contain a prev log
-  //     index. Our goal now is to satisfy the Log Matching Property.
+  //   index. Our goal now is to satisfy the Log Matching Property.
   // If an existing entry in this peers' log conflicts with an entry in
-  //     entries[] (same index, but different term), delete the existing
-  //     entry and all that follow it
+  //   entries[] (same index, but different term), delete the existing
+  //   entry and all that follow it
   ///////////////////////////////////////////////////////////////////////////
   peerIdx := args.PrevLogIndex + 1
   leaderIdx := 0
 
   for ; leaderIdx < len(args.Entries) && peerIdx < len(rf.log); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
     if rf.entriesConflict(args.Entries, leaderIdx, peerIdx) {
-      // color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+      color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
       rf.truncateLog(peerIdx)
-      // color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+      color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
       break
     }
   }
@@ -210,13 +221,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   // Rule 4
   // We've resolved all conflicting entries that may exist between the leader
-  //     and this peer. Now, append any remaining entries to this peer.
-  //     i.e. Tack on the new entries that the leader wants us to replicate.
+  //   and this peer. Now, append any remaining entries to this peer.
+  //   i.e. Tack on the new entries that the leader wants us to replicate.
   // We choose the method of making a new slice and copying the contents over
-  //     because we want to free the current slice/underlying array that is
-  //     being referenced by rf.log, in order for this outdated log to be
-  //     garbage collected. Granted, this method has a linear complexity,
-  //     we can make optimizations in the future if necessary
+  //   because we want to free the current slice/underlying array that is
+  //   being referenced by rf.log, in order for this outdated log to be
+  //   garbage collected. Granted, this method has a linear complexity,
+  //   we can make optimizations in the future if necessary
   ///////////////////////////////////////////////////////////////////////////
   if leaderIdx <= len(args.Entries)-1 {
     logWithReplicatedEntries := make([]Entry, len(rf.log)+len(args.Entries)-leaderIdx)
@@ -233,13 +244,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   // Rule 5
   // Update the commit index of the follower.
   // Before this code, we've used the Leader's entries arr to replicate
-  //     new entries on this peer. The last entry that we've replicated is
-  //     the last log entry on this peer's log. As a result, update this
-  //     peer's commit index.
+  //   new entries on this peer. The last entry that we've replicated is
+  //   the last log entry on this peer's log. As a result, update this
+  //   peer's commit index.
   ///////////////////////////////////////////////////////////////////////////
   if args.LeaderCommit > rf.commitIndex {
     rf.commitIndex = minOf(args.LeaderCommit, len(rf.log)-1)
-    go rf.applyEntry()
   }
   return
 }

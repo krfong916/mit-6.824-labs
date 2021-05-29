@@ -25,7 +25,6 @@ const (
 )
 
 func (rf *Raft) convertToFollower(term int) {
-  // color.New(color.FgRed).Printf("(%v)[%d][%v]: (new term) %v, stepping down from %v -> Follower\n", rf.state, rf.me, rf.currentTerm, term, rf.state)
   rf.currentTerm = term
   rf.state = FOLLOWER
   rf.votedFor = -1
@@ -44,7 +43,6 @@ func (rf *Raft) convertToLeader() {
   rf.setElectionTimeout()
   rf.nextIndex = make([]int, len(rf.peers))
   rf.matchIndex = make([]int, len(rf.peers))
-  // color.New(color.FgMagenta).Printf("New Leader[%v][%v]: log length: %v, and log:%v\n", rf.me, rf.currentTerm, len(rf.log), rf.log)
   for peer := 0; peer < len(rf.peers); peer++ {
     rf.nextIndex[peer] = len(rf.log)
     rf.matchIndex[peer] = 0
@@ -53,7 +51,7 @@ func (rf *Raft) convertToLeader() {
 
 func (rf *Raft) persist() {}
 func (rf *Raft) readPersist(data []byte) {
-  if data == nil || len(data) < 1 { // bootstrap without any state?
+  if data == nil || len(data) < 1 {
     return
   }
 }
@@ -90,18 +88,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
   rf.readPersist(persister.ReadRaftState())
 
   go rf.kickOffElectionTimeout()
+  go rf.applyEntry()
   return rf
 }
 
 func (rf *Raft) setElectionTimeout() {
   interm := rand.NewSource(time.Now().UnixNano())
   random := rand.New(interm)
-  timeout := time.Duration(300+random.Int63()%170) * time.Millisecond
+  timeout := time.Duration(random.Int63()%150) * time.Millisecond
   rf.electionTimeout = time.Now().Add(timeout)
 }
 
 func sleep() {
-  ms := 20
+  ms := 300
   time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
@@ -137,10 +136,12 @@ func (rf *Raft) performLeaderElection() {
   rf.convertToCandidate()
   color.New(color.FgMagenta).Printf("Candidate[%v][%v]: starting an election: %v\n", rf.me, rf.currentTerm, rf.log)
   /////////////////////////////////////////////////////////////////////////////
-  // - Create Request Vote structs
-  // - Vote for ourself, and initialize a term variable
-  // We need the term variable because we may have to update our candidate
-  // based on the follower's highest term, ie our candidate may be out of date
+  // Vote for ourself, and initialize a term variable
+  //   We need the term variable because we may have to update our candidate
+  //   based on the follower's highest term; One scenario: our candidate may
+  //   be out of date or a new leader may be elected b/t the time the
+  //   RequestVote message is delivered, and the time that we receive a reply
+  //   back. Additionally, we may just be an out-of-date peer
   /////////////////////////////////////////////////////////////////////////////
   args := &RequestVoteArgs{
     CandidateId:  rf.me,
@@ -179,9 +180,8 @@ func (rf *Raft) performLeaderElection() {
       } else if reply.Term > rf.currentTerm {
         termChanged = true
         higherTerm = reply.Term
-      } else {
-        // received stale request vote response, we've moved on
       }
+      // received stale request vote response, we've moved on
       finished++
       cond.Broadcast()
     }(peer)
@@ -210,6 +210,10 @@ func (rf *Raft) performLeaderElection() {
   }
 }
 
+/**
+ * establishAuthority is a long running go routine that sends heartbeat messages
+ * to peers. This is one mechanism to prevent follower node's from striking up an election
+ */
 func (rf *Raft) establishAuthority() {
   for rf.killed() == false {
     _, isLeader := rf.GetState()
@@ -269,7 +273,7 @@ func (rf *Raft) establishAuthority() {
     }
     ///////////////////////////////////////////////////////////////////////////
     // If we found out that we're no longer the leader via heartbeat messages
-    // then step down as a leader, else continue to send out heartbeats
+    //   then step down as a leader, else continue to send out heartbeats
     ///////////////////////////////////////////////////////////////////////////
     if termChanged && higherTerm > originalTerm {
       color.New(color.FgRed).Printf("Leader[%v][%v]: by virtue of heartbeat, stepping down to follower, new term%v\n", rf.me, rf.currentTerm, higherTerm)
@@ -282,11 +286,10 @@ func (rf *Raft) establishAuthority() {
     if isLeader == false {
       return
     } else {
+      ///////////////////////////////////////////////////////////////////////////
       // we sleep because the tester limits us to 10 heartbeats/sec
-      // but here's a scenario
-      // we go to sleep as the leader
-      // and wake back up as a follower/candidate
-      time.Sleep(time.Duration(80 * time.Millisecond))
+      ///////////////////////////////////////////////////////////////////////////
+      time.Sleep(time.Duration(100 * time.Millisecond))
     }
   }
 }
@@ -296,20 +299,19 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
   return ok
 }
 
-//
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-//
+/*
+  the service using Raft (e.g. a k/v server) wants to start
+  agreement on the next command to be appended to Raft's log. if this
+  server isn't the leader, returns false. otherwise start the
+  agreement and return immediately. there is no guarantee that this
+  command will ever be committed to the Raft log, since the leader
+  may fail or lose an election. even if the Raft instance has been killed,
+  this function should return gracefully.
+  the first return value is the index that the command will appear at
+  if it's ever committed. the second return value is the current
+  term. the third return value is true if this server believes it is
+  the leader.
+*/
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
   term, isLeader := rf.GetState()
   if !isLeader {
@@ -327,12 +329,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
   return index, term, isLeader
 }
 
+/**
+ * attemptCommitEntry is a long-running goroutine for replicating entries on a peer.
+ * If the peer's log is up-to-date, then we prevent sending new AppendEntries to the peer.
+ * One way to interpret replicating an entry on a peer: it's the peer's way
+ * of pledging allegiance to the leader.
+ */
 func (rf *Raft) attemptCommitEntry() {
-  // the only reason why we have the num-replicated is due to our need to retry sending entries
-  // the long-running for loop must terminate somehow
-  // replicatedAllPeers := false
-  // numReplicated := 1 // initialized to 1 because we've replicated the entry on our own log
-  // for !rf.killed() || !replicatedAllPeers {
   for !rf.killed() {
     _, isLeader := rf.GetState()
     if !isLeader {
@@ -378,7 +381,7 @@ func (rf *Raft) attemptCommitEntry() {
           defer rf.mu.Unlock()
 
           ///////////////////////////////////////////////////////////////////////////
-          // if we're no longer leader, we halt execution immediately
+          // If we're no longer leader, we halt execution immediately
           ///////////////////////////////////////////////////////////////////////////
           if rf.state != LEADER {
             color.New(color.FgRed).Printf("FRAUD Leader[%v][%v]: halt execution\n", rf.me, args.Term)
@@ -386,8 +389,8 @@ func (rf *Raft) attemptCommitEntry() {
           }
 
           ///////////////////////////////////////////////////////////////////////////
-          // if the peer's term is larger than our term when we sent the request
-          // we must step down to follower, our term is out of date
+          // If the peer's term is larger than our term when we sent the request
+          //   we must step down to follower, our term is out of date
           ///////////////////////////////////////////////////////////////////////////
           if reply.Success == false && reply.Term > args.Term {
             color.New(color.FgRed).Printf("Leader[%v][%v]: peer: %v has a term %v that's larger than ours: %v, stepping down!\n", rf.me, args.Term, peer, reply.Term, args.Term)
@@ -396,11 +399,34 @@ func (rf *Raft) attemptCommitEntry() {
           }
 
           ///////////////////////////////////////////////////////////////////////////
-          // Retry if we sent an incorrect prevLogIndex, nextIndex is optimistic
+          // Retry if we sent an incorrect prevLogIndex, nextIndex is optimistic,
+          //   matchIndex is conservative.
+          //   This code captures the Retry optimization protocol defined in section
+          //   5.3. If we have an entry whose term conflicts, or the PrevLogIndex
+          //   doesn't exist within the peer's log, then we make a send only the
+          //   necessary log entries, rather than decrement nextIndex one-at-a-time.
           ///////////////////////////////////////////////////////////////////////////
           if reply.Success == false && reply.Term == args.Term {
-            color.New(color.FgGreen).Printf("Leader[%v][%v]: RETRY! decrement nextIndex. We sent: %v to %v\n", rf.me, args.Term, args.Entries, peer)
-            rf.nextIndex[peer] = args.PrevLogIndex - 1
+            if reply.ConflictTerm >= 0 {
+              foundNearestEntryWithTerm := false
+              for i := len(rf.log) - 1; i >= 0; i-- {
+                if rf.log[i].Term == reply.ConflictTerm {
+                  foundNearestEntryWithTerm = true
+                  rf.nextIndex[peer] = i + 1
+                  break
+                }
+              }
+              if !foundNearestEntryWithTerm {
+                rf.nextIndex[peer] = reply.ConflictIndex
+              }
+              color.New(color.FgGreen).Printf("Leader[%v][%v]: CONFLICT! nextIndex is now %v. We sent: %v to %v\n", rf.me, args.Term, rf.nextIndex[peer], args.Entries, peer)
+            } else if reply.ConflictIndex >= 0 && reply.ConflictTerm < 0 {
+              rf.nextIndex[peer] = reply.ConflictIndex
+              color.New(color.FgGreen).Printf("Leader[%v][%v]: CONFLICT! nextIndex is now %v. We sent: %v to %v\n", rf.me, args.Term, rf.nextIndex[peer], args.Entries, peer)
+            } else {
+              color.New(color.FgGreen).Printf("Leader[%v][%v]: RETRY! decrement nextIndex. We sent: %v to %v\n", rf.me, args.Term, args.Entries, peer)
+              rf.nextIndex[peer] = args.PrevLogIndex - 1
+            }
           }
 
           ///////////////////////////////////////////////////////////////////////////
@@ -416,11 +442,9 @@ func (rf *Raft) attemptCommitEntry() {
             color.New(color.FgGreen).Printf("Leader[%v][%v]: successfully replicated %v on Peer[%v]\n", rf.me, args.Term, args.Entries, peer)
             rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
             rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
-            // numReplicated++
             if len(rf.log)-1 > rf.commitIndex {
               if rf.hasReplicatedMajority() && rf.currAndLogTermMatch() {
                 rf.updateCommitIndex()
-                go rf.applyEntry()
               }
             }
           }
@@ -428,10 +452,7 @@ func (rf *Raft) attemptCommitEntry() {
         }(peer)
       }
     }
-    // if numReplicated == len(rf.peers) {
-    //   replicatedAllPeers = true
-    // }
-    time.Sleep(30 * time.Millisecond)
+    time.Sleep(10 * time.Millisecond)
   }
 }
 
@@ -455,20 +476,32 @@ func (rf *Raft) updateCommitIndex() {
 }
 
 func (rf *Raft) applyEntry() {
-  rf.mu.Lock()
-  defer rf.mu.Unlock()
-  for rf.commitIndex > rf.lastApplied {
-    rf.lastApplied += 1
-    entry := rf.log[rf.lastApplied]
-    msg := ApplyMsg{
-      CommandValid: true,
-      Command:      entry.Command,
-      CommandIndex: rf.lastApplied,
-      CommandTerm:  entry.Term,
+  for !rf.killed() {
+    toCommit := false
+    rf.mu.Lock()
+    if rf.commitIndex > rf.lastApplied {
+      toCommit = true
     }
-    color.New(color.FgGreen).Printf("(%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
-    rf.applyCh <- msg
+    rf.mu.Unlock()
+
+    if toCommit {
+      rf.mu.Lock()
+      for rf.commitIndex > rf.lastApplied {
+        rf.lastApplied += 1
+        entry := rf.log[rf.lastApplied]
+        msg := ApplyMsg{
+          CommandValid: true,
+          Command:      entry.Command,
+          CommandIndex: rf.lastApplied,
+          CommandTerm:  entry.Term,
+        }
+        color.New(color.FgGreen).Printf("(%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
+        rf.applyCh <- msg
+
+      }
+      color.New(color.FgGreen).Printf("(%v)[%v][%v]: Final state commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
+      rf.mu.Unlock()
+    }
+    time.Sleep(10 * time.Millisecond)
   }
-  color.New(color.FgGreen).Printf("(%v)[%v][%v]: Final state commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
-  return
 }
