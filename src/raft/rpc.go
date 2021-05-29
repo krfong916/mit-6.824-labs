@@ -1,9 +1,5 @@
 package raft
 
-import (
-  "github.com/fatih/color"
-)
-
 type Entry struct {
   Term    int         // The leader's term that requested this Entry to be replicated
   Command interface{} // The client command to apply to the peer's state machine
@@ -52,7 +48,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   staleTerm := false
   rf.mu.Lock()
-  color.New(color.FgCyan).Printf("(%v)[%d][%v]: received a request vote from %d at term: %v\n", rf.state, rf.me, rf.currentTerm, args.CandidateId, args.Term)
+  // color.New(color.FgCyan).Printf("(%v)[%d][%v]: received a request vote from %d at term: %v\n", rf.state, rf.me, rf.currentTerm, args.CandidateId, args.Term)
   if args.Term < rf.currentTerm {
     reply.Term = rf.currentTerm
     reply.VoteGranted = false
@@ -69,7 +65,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if args.Term > rf.currentTerm {
-    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+    // color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
@@ -88,8 +84,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.candidateIsMoreUpToDate(args.LastLogIndex, args.LastLogTerm) {
-    color.New(color.FgCyan).Printf("(%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
-    rf.convertToFollower(args.Term)
+    // color.New(color.FgCyan).Printf("(%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
+    rf.setElectionTimeout()
+    // rf.convertToFollower(args.Term)
     rf.votedFor = args.CandidateId
     reply.VoteGranted = true
     reply.Term = rf.currentTerm
@@ -116,10 +113,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   // if the append entries message is stale, disregard
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
-  color.New(color.FgGreen).Printf("(%v)[%v][%v]: received an append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+  // color.New(color.FgGreen).Printf("(%v)[%v][%v]: received an append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
   isStale := false
   if args.Term < rf.currentTerm {
-    color.New(color.FgRed).Printf("(%v)[%v][%v]: received a STALE append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+    // color.New(color.FgRed).Printf("(%v)[%v][%v]: received a STALE append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
     reply.Term = rf.currentTerm
     reply.Success = false
     isStale = true
@@ -135,7 +132,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if args.Term > rf.currentTerm {
-    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+    // color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
@@ -148,7 +145,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   ///////////////////////////////////////////////////////////////////////////
   rf.mu.Lock()
   if rf.state == CANDIDATE && args.Term >= rf.currentTerm {
-    color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+    // color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
     rf.convertToFollower(args.Term)
   }
   rf.mu.Unlock()
@@ -184,7 +181,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
   //     prev-log-term matches this peer's term.
   ///////////////////////////////////////////////////////////////////////////
   if heartbeat(args.Entries) {
-    color.New(color.FgYellow).Printf("(%v)[%v][%d]: recognizes heartbeat from Leader[%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+    // color.New(color.FgYellow).Printf("(%v)[%v][%d]: recognizes heartbeat from Leader[%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
     rf.setElectionTimeout()
     reply.Success = true
     reply.Term = rf.currentTerm
@@ -203,9 +200,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
   for ; leaderIdx < len(args.Entries) && peerIdx < len(rf.log); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
     if rf.entriesConflict(args.Entries, leaderIdx, peerIdx) {
-      color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+      // color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
       rf.truncateLog(peerIdx)
-      color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+      // color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
       break
     }
   }
@@ -263,22 +260,3 @@ func (rf *Raft) truncateLog(idx int) {
   copy(newLog, rf.log)
   rf.log = newLog
 }
-
-// if this raft peer's term is higher, return false
-//     don't grant vote
-
-// if the raft peer's term is == or <, return true
-//     grant the vote
-// return candidatesLastLogTerm >= lastEntry.Term
-// implicit: lastEntry.Term == candidatesLastLogTerm
-// whichever log is longer, the leader or the peer's
-//     determines who is MORE up-to-date
-// if len(rf.log) <= candidatesLastLogIndex {
-//   return true
-// } else {
-//   return false
-// }
-
-// however, we only care if the candidate's log is
-// AT-LEAST up-to-date as this peer
-// (args.LastLogIndex > len(rf.log)-1 && args.LastLogTerm > rf.log[len(rf.log)-1].Term)

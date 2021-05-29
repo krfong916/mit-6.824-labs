@@ -178,7 +178,7 @@ func (cfg *config) start1(i int) {
         // ignore other types of ApplyMsg
       } else {
         v := m.Command
-        // DPrintf("v %v", v)
+        DPrintf("v %v", v)
         cfg.mu.Lock()
         for j := 0; j < len(cfg.logs); j++ {
           if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
