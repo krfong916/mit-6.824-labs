@@ -33,9 +33,9 @@ type Raft struct {
 }
 
 func (rf *Raft) GetState() (int, bool) {
-	var isLeader = false
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	isLeader := false
 	if rf.state == LEADER {
 		isLeader = true
 	}

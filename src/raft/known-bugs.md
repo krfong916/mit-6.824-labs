@@ -93,3 +93,22 @@ race: limit on 8128 simultaneously alive goroutines is exceeded, dying
 
 // 2B Altogether
 // 0.500 -
+
+- [x] RULES FOR ALL SERVERS (Rule 1) create an applyEntry handler. if commitIndex > lastApplied at anytime, apply a particular log entry. First, we must lock on the applies - Why? - some other routine doesn't also detect that entries need to be applied and also tries to apply
+  - when do we check? after commitIndex is updated (like after matchIndex is updated).
+  - Warning, if we check commitIndex @thesame time as sending out AppendEntries to peers, we'll have to wait until the next entry is appended to the log before applying the entry you just sent out and got acknowledged
+- [x] Raft leader's can't be sure an entry is actually committed on other servers, so, we'll need to specifically check that log[N].term == currentTerm - where?
+
+- [x] truncate the log ONLY when we find a conflict in append entries RPC
+- [x] If an AE is rejected and not because of log inconsistency - then immediately step down (we know this) and NOT update nextIndex. But why? If we do, we could race with the resetting of nextIndex if we are re-elected immediately
+
+Difference between nextIndex and matchIndex
+
+- matchIndex == nextIndex-1
+- matchIndex is used for safety
+- nextIndex is a guess about the log prefix that the peer shares with the leader
+  - optimistic and only moves back on negative responses
+- [x] when a leader has been elected, nextIndex is set to be the index at the end of the log
+- [x] matchIndex is never set too high, it is a conservative measurement of what log prefix the peer shares with the leader. It is initially set to -1 and only updated when a follower positively acknowledges an AppendEntries RPC --> it's the highest value known to be replicated on the peer's server, we must update with prevLogIndex + len(entries[]) with the args that we sent in the RPC originally
+
+While we send an RPC, our state can change, therefore, we must handle our assumptions about our data with care
