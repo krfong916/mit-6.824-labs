@@ -11,6 +11,7 @@ import (
 
 	"../labgob"
 	"../labrpc"
+	"github.com/fatih/color"
 )
 
 type ApplyMsg struct {
@@ -54,7 +55,7 @@ func (rf *Raft) convertToLeader() {
 func (rf *Raft) setElectionTimeout() {
 	interm := rand.NewSource(time.Now().UnixNano())
 	random := rand.New(interm)
-	timeout := time.Duration(250+random.Int63()%150) * time.Millisecond
+	timeout := time.Duration(200+random.Int63()%200) * time.Millisecond
 	rf.electionTimeout = time.Now().Add(timeout)
 }
 
@@ -142,10 +143,10 @@ func (rf *Raft) checkTimeElapsed() {
 
 func (rf *Raft) performLeaderElection() {
 	rf.mu.Lock()
-	// color.New(color.FgMagenta).Printf("[%v][%v][%v]: converting from %v -> Candidate\n", rf.state, rf.me, rf.currentTerm, rf.state)
+	color.New(color.FgMagenta).Printf("[%v][%v][%v]: converting from %v -> Candidate\n", rf.state, rf.me, rf.currentTerm, rf.state)
 	rf.convertToCandidate()
 	rf.persist()
-	// color.New(color.FgMagenta).Printf("Candidate[%v][%v]: starting an election: %v\n", rf.me, rf.currentTerm, rf.log)
+	color.New(color.FgMagenta).Printf("Candidate[%v][%v]: starting an election: %v\n", rf.me, rf.currentTerm, rf.log)
 	args := &RequestVoteArgs{
 		CandidateId:  rf.me,
 		Term:         rf.currentTerm,
@@ -169,7 +170,7 @@ func (rf *Raft) performLeaderElection() {
 
 		go func(peer int) {
 			rf.mu.Lock()
-			// color.New(color.FgCyan).Printf("Candidate[%v][%v]: sent a request vote to %v\n", rf.me, rf.currentTerm, peer)
+			color.New(color.FgCyan).Printf("Candidate[%v][%v]: sent a request vote to %v\n", rf.me, rf.currentTerm, peer)
 			rf.mu.Unlock()
 			reply := &RequestVoteReply{}
 			nodeReceivedMessage := rf.sendRequestVote(peer, args, reply)
@@ -200,13 +201,13 @@ func (rf *Raft) performLeaderElection() {
 
 	// Our term is out of date
 	if termChanged && higherTerm > rf.currentTerm {
-		// color.New(color.FgRed).Printf("Candidate[%v][%v]: stepping down to follower, new term%v\n", rf.me, rf.currentTerm, higherTerm)
+		color.New(color.FgRed).Printf("Candidate[%v][%v]: stepping down to follower, new term%v\n", rf.me, rf.currentTerm, higherTerm)
 		rf.convertToFollower(higherTerm)
 	}
 
 	// We received a majority vote
 	if votes > len(rf.peers)/2 && rf.state == CANDIDATE && higherTerm == rf.currentTerm {
-		// color.New(color.FgMagenta).Printf("Candidate[%v][%v]: Won Election! Log: %v\n", rf.me, rf.currentTerm, rf.log)
+		color.New(color.FgMagenta).Printf("Candidate[%v][%v]: Won Election! Log: %v\n", rf.me, rf.currentTerm, rf.log)
 		rf.convertToLeader()
 	}
 
@@ -238,7 +239,7 @@ func (rf *Raft) establishAuthority() {
 			return
 		}
 		rf.mu.Lock()
-		// color.New(color.FgMagenta).Printf("Leader[%v][%v]: establishAuthority! Log: %v\n", rf.me, rf.currentTerm, rf.log)
+		color.New(color.FgMagenta).Printf("HB Leader[%v][%v]: establishAuthority! Log: %v\n", rf.me, rf.currentTerm, rf.log)
 		termChanged := false
 		higherTerm := rf.currentTerm
 		originalTerm := rf.currentTerm
@@ -267,7 +268,7 @@ func (rf *Raft) establishAuthority() {
 				go func(peer int) {
 					/* Send Heartbeats! */
 					rf.mu.Lock()
-					// color.New(color.FgYellow).Printf("Leader[%v][%v]: sent a heartbeat message to %v with log: %v, term: %v, and index: %v\n", rf.me, rf.currentTerm, peer, len(args.Entries), args.PrevLogTerm, args.PrevLogIndex)
+					color.New(color.FgYellow).Printf("HB Leader[%v][%v]: sent a heartbeat message to %v with log: %v, term: %v, and index: %v\n", rf.me, rf.currentTerm, peer, len(args.Entries), args.PrevLogTerm, args.PrevLogIndex)
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
 					nodeReceivedHeartbeat := rf.sendAppendEntries(peer, args, reply)
@@ -311,6 +312,7 @@ func (rf *Raft) establishAuthority() {
 					finished++
 
 					cond.Broadcast()
+					return
 				}(peer)
 			}
 		}
@@ -324,7 +326,7 @@ func (rf *Raft) establishAuthority() {
 		//   then step down as a leader, else continue to send out heartbeats
 		///////////////////////////////////////////////////////////////////////////
 		if termChanged && higherTerm > originalTerm {
-			// color.New(color.FgRed).Printf("Leader[%v][%v]: by virtue of heartbeat, stepping down to follower, new term%v\n", rf.me, rf.currentTerm, higherTerm)
+			color.New(color.FgRed).Printf("Leader[%v][%v]: by virtue of heartbeat, stepping down to follower, new term%v\n", rf.me, rf.currentTerm, higherTerm)
 			rf.convertToFollower(higherTerm)
 		}
 
@@ -337,7 +339,7 @@ func (rf *Raft) establishAuthority() {
 			///////////////////////////////////////////////////////////////////////////
 			// we sleep because the tester limits us to 10 heartbeats/sec
 			///////////////////////////////////////////////////////////////////////////
-			time.Sleep(time.Duration(50 * time.Millisecond))
+			time.Sleep(time.Duration(100 * time.Millisecond))
 		}
 	}
 }
@@ -381,7 +383,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := len(rf.log) - 1
 	term = rf.currentTerm
 
-	/* area of concern */
+	// needed to determine if an entry has been replicated on a majority of peers
 	rf.matchIndex[rf.me] = len(rf.log) - 1
 
 	rf.persist()
@@ -391,6 +393,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	go rf.attemptCommitEntry()
 
 	return index, term, isLeader
+}
+
+func (rf *Raft) getEntriesLength(peer int) int {
+	if rf.nextIndex[peer] > len(rf.log) {
+		return 0
+	} else {
+		return (len(rf.log) - rf.nextIndex[peer]) + 1
+	}
 }
 
 /**
@@ -419,25 +429,23 @@ func (rf *Raft) attemptCommitEntry() {
 				shouldSend = false
 			}
 
-			fmt.Printf("RAFT: length %v\n", len(rf.log))
-			fmt.Printf("RAFT: nextIndex[%v]: %v\n", peer, rf.nextIndex[peer])
-
 			args := &AppendEntriesArgs{
 				Term:         rf.currentTerm,
 				LeaderId:     rf.me,
 				LeaderCommit: rf.commitIndex,
 				PrevLogIndex: rf.nextIndex[peer] - 1,
 				PrevLogTerm:  rf.log[rf.nextIndex[peer]-1].Term,
-				Entries:      rf.log[rf.nextIndex[peer]:],
+				Entries:      make([]Entry, rf.getEntriesLength(peer)),
 			}
+			color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: AppendEntriesArgs: len(rf.log)=%v, rf.nextIndex[%v]=%v, len(entries)=%v\n", rf.state, rf.me, rf.currentTerm, len(rf.log), peer, rf.nextIndex[peer], len(args.Entries))
+
+			args.Entries = append(rf.log[rf.nextIndex[peer]:])
 			rf.mu.Unlock()
 
 			if shouldSend {
 				go func(peer int) {
 					rf.mu.Lock()
-					// color.New(color.FgCyan).Printf("Leader[%v][%v]: sending an AE to %v, term: %v, index: %v\n", rf.me, rf.currentTerm, peer, args.PrevLogTerm, args.PrevLogIndex)
-					// fmt.Printf("OUR LOG: %v\n", rf.log)
-					// fmt.Printf("DIFF: %v\n", args.Entries)
+					color.New(color.FgCyan).Printf("AESender Leader[%v][%v]: sending an AE to %v, term: %v, index: %v\n", rf.me, rf.currentTerm, peer, args.PrevLogTerm, args.PrevLogIndex)
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
 					rf.sendAppendEntries(peer, args, reply)
@@ -449,8 +457,10 @@ func (rf *Raft) attemptCommitEntry() {
 					//   we must step down to follower, our term is out of date
 					///////////////////////////////////////////////////////////////////////////
 					if reply.Success == false && reply.Term > args.Term {
-						// color.New(color.FgRed).Printf("Leader[%v][%v]: peer: %v has a term %v that's larger than ours: %v, stepping down!\n", rf.me, args.Term, peer, reply.Term, args.Term)
+						color.New(color.FgRed).Printf("AESender Leader[%v][%v]: peer: %v has a term %v that's larger than ours: %v, stepping down!\n", rf.me, args.Term, peer, reply.Term, args.Term)
 						rf.convertToFollower(reply.Term)
+						rf.mu.Unlock()
+						return
 					}
 
 					///////////////////////////////////////////////////////////////////////////
@@ -468,15 +478,21 @@ func (rf *Raft) attemptCommitEntry() {
 							found := false
 							for i := len(rf.log) - 1; i >= 0; i-- {
 								if rf.log[i].Term == reply.ConflictTerm {
+									fmt.Printf("(%v)[%v]: here?: %v\n", rf.state, rf.me, i+1)
+									fmt.Printf("(%v)[%v]: nextIndex: %v\n", rf.state, rf.me, rf.nextIndex[peer])
 									rf.nextIndex[peer] = i + 1
 									found = true
 									break
 								}
 							}
 							if !found {
+								fmt.Printf("(%v)[%v]: hm: %v\n", rf.state, rf.me, reply.ConflictIndex)
+								fmt.Printf("(%v)[%v]: nextIndex: %v\n", rf.state, rf.me, rf.nextIndex[peer])
 								rf.nextIndex[peer] = reply.ConflictIndex
 							}
 						} else if reply.ConflictIndex > 0 && reply.ConflictTerm == 0 {
+							fmt.Printf("(%v)[%v]: conflict? %v\n", rf.state, rf.me, reply.ConflictIndex)
+							fmt.Printf("(%v)[%v]: nextIndex: %v\n", rf.state, rf.me, rf.nextIndex[peer])
 							rf.nextIndex[peer] = reply.ConflictIndex
 						}
 					}
@@ -499,9 +515,11 @@ func (rf *Raft) attemptCommitEntry() {
 					//   those entries to the state machine
 					///////////////////////////////////////////////////////////////////////////
 					if reply.Success && reply.Term == args.Term {
-						// color.New(color.FgYellow).Printf("Leader[%v][%v]: successfully replicated %v on Peer[%v]\n", rf.me, args.Term, args.Entries, peer)
 						rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
 						rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
+						color.New(color.FgYellow).Printf("AESender Leader[%v][%v]: successfully replicated %v on Peer[%v]\n", rf.me, args.Term, args.Entries, peer)
+						color.New(color.FgYellow).Printf("AESender Leader[%v][%v]: Peer[%v] matchIndex=%v\n", rf.me, args.Term, peer, rf.matchIndex[peer])
+						color.New(color.FgYellow).Printf("AESender Leader[%v][%v]: Peer[%v] nextIndex=%v\n", rf.me, args.Term, peer, rf.nextIndex[peer])
 						if len(rf.log)-1 > rf.commitIndex { // if we have a new entry in our log, our commitIndex needs to be updated
 							rf.calculateCommitIndex()
 						}
@@ -511,16 +529,16 @@ func (rf *Raft) attemptCommitEntry() {
 				}(peer)
 			}
 		}
-		time.Sleep(15 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
 func (rf *Raft) calculateCommitIndex() {
 	ok, index := rf.getReplicatedMajorityIndex()
-	// color.New(color.FgYellow).Printf("ok: %v\n", ok)
-	// color.New(color.FgYellow).Printf("index: %v\n", index)
+	color.New(color.FgYellow).Printf("ok: %v\n", ok)
+	color.New(color.FgYellow).Printf("index: %v\n", index)
 	if ok {
-		// color.New(color.FgYellow).Printf("Leader[%v][%v]: new commit index: %v\n", rf.me, rf.currentTerm, len(rf.log)-1)
+		color.New(color.FgYellow).Printf("Leader[%v][%v]: new commit index: %v\n", rf.me, rf.currentTerm, len(rf.log)-1)
 		rf.commitIndex = index
 	}
 }
@@ -569,13 +587,13 @@ func (rf *Raft) applyEntry() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  entry.Term,
 				}
-				// color.New(color.FgBlue).Printf("(%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
+				color.New(color.FgBlue).Printf("(%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				rf.applyCh <- msg
 
 			}
-			// color.New(color.FgBlue).Printf("(%v)[%v][%v]: Final state commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
+			color.New(color.FgBlue).Printf("(%v)[%v][%v]: Final state commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
 			rf.mu.Unlock()
 		}
-		time.Sleep(15 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 }

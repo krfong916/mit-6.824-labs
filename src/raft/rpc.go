@@ -39,6 +39,43 @@ type AppendEntriesReply struct {
 	ConflictTerm  int  // The term of the conflicting entry
 }
 
+// func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+// 	rf.mu.Lock()
+// 	defer rf.mu.Unlock()
+
+// 	reply.Term = rf.currentTerm
+// 	reply.VoteGranted = false
+
+// 	// the request is outdated, disregard
+// 	if args.Term < rf.currentTerm {
+// 		return
+// 	}
+
+// 	// rules for all servers: if we see a new term, step down and reset timer
+// 	if args.Term > rf.currentTerm {
+// 		color.New(color.FgRed).Printf("RVReceiver (%v)[%d][%v]: received a larger term: %v, stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+// 		rf.convertToFollower(args.Term)
+// 		rf.persist()
+// 	}
+
+// 	if rf.votedFor != -1 || rf.votedFor != args.CandidateId {
+// 		return
+// 	}
+
+// 	lastIndex, lastTerm := rf.getLastLogIndex(), rf.getLastLogTerm()
+// 	if lastTerm > args.LastLogTerm || (lastTerm == args.LastLogTerm && lastIndex > args.LastLogIndex) {
+// 		return
+// 	}
+
+// 	color.New(color.FgCyan).Printf("RVReceiver (%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
+// 	rf.setElectionTimeout()
+// 	rf.votedFor = args.CandidateId
+// 	reply.VoteGranted = true
+
+// 	rf.persist()
+
+// 	return
+// }
 /**
  * RequestVote is a candidate's attempt to request votes from peers
  * For a peer to give a candidate their vote
@@ -51,49 +88,48 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// the request is outdated, disregard
-	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-		return
-	}
-
 	// rules for all servers: if we see a new term, step down and reset timer
 	if args.Term > rf.currentTerm {
-		color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v, stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+		color.New(color.FgRed).Printf("RVReceiver (%v)[%d][%v]: received a larger term: %v, stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
 		rf.convertToFollower(args.Term)
+		rf.persist()
 	}
 
-	// check if we've already voted this term
-	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
+	// the request is outdated, disregard
+	if args.Term < rf.currentTerm {
 		return
 	}
 
-	// grant vote if the request has a higher term
-	lastIndex, lastEntry := rf.getLastLogEntry()
-	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		if (args.LastLogTerm == lastEntry.Term && args.LastLogIndex > lastIndex) || args.LastLogTerm >= lastEntry.Term {
-			// color.New(color.FgCyan).Printf("(%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
-			rf.setElectionTimeout()
-			rf.votedFor = args.CandidateId
-			reply.VoteGranted = true
-			reply.Term = rf.currentTerm
-		}
+	// grant vote if the request's log is up to date
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.isUpToDate(args.LastLogTerm, args.LastLogIndex) {
+		color.New(color.FgCyan).Printf("RVReceiver (%v)[%v][%d]: granting a vote to %d\n", rf.state, rf.me, rf.currentTerm, args.CandidateId)
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+		reply.Term = rf.currentTerm
+		rf.persist()
+	} else {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
 	}
 
-	rf.persist()
-
 	return
+}
+func (rf *Raft) isUpToDate(candidateTerm int, candidateIndex int) bool {
+	lastIndex, lastTerm := rf.getLastLogIndex(), rf.getLastLogTerm()
+	color.New(color.FgCyan).Printf("RVReceiver (%v)[%v][%d]: candidateTerm= %v, lastTerm= %v, candidateIndex= %v, lastIndex= %v\n", rf.state, rf.me, rf.currentTerm, candidateTerm, lastTerm, candidateIndex, lastIndex)
+	if candidateTerm > lastTerm || (candidateTerm == lastTerm && candidateIndex >= lastIndex) || (rf.log[lastIndex].Term == 0 && rf.log[lastIndex].Command == nil) {
+		rf.setElectionTimeout()
+		return true
+	} else {
+		return false
+	}
 }
 
 func (rf *Raft) getLastLogTerm() int {
 	return rf.log[len(rf.log)-1].Term
 }
-
-func (rf *Raft) getLastLogEntry() (int, Entry) {
-	return len(rf.log) - 1, rf.log[len(rf.log)-1]
+func (rf *Raft) getLastLogIndex() int {
+	return len(rf.log) - 1
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -102,12 +138,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// if the append entries message is stale, disregard
 	///////////////////////////////////////////////////////////////////////////
 	rf.mu.Lock()
-	// color.New(color.FgGreen).Printf("(%v)[%v][%v]: received an append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
-	// color.New(color.FgGreen).Printf("(%v)[%v][%v]: commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
-	// color.New(color.FgGreen).Printf("PrevLogIndex: %v, PrevLogTerm: %v, LeaderCommit:%v\n", args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
+	color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: received an append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+	color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
+	color.New(color.FgGreen).Printf("AEReceiver PrevLogIndex: %v, PrevLogTerm: %v, LeaderCommit:%v\n", args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 	isStale := false
 	if args.Term < rf.currentTerm {
-		// color.New(color.FgRed).Printf("(%v)[%v][%v]: received a STALE append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+		color.New(color.FgRed).Printf("AEReceiver (%v)[%v][%v]: received a STALE append entry request from [%v], term %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		isStale = true
@@ -123,7 +159,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	///////////////////////////////////////////////////////////////////////////
 	rf.mu.Lock()
 	if args.Term > rf.currentTerm {
-		// color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+		color.New(color.FgRed).Printf("AEReceiver (%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
 		rf.convertToFollower(args.Term)
 	}
 	rf.mu.Unlock()
@@ -136,7 +172,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	///////////////////////////////////////////////////////////////////////////
 	rf.mu.Lock()
 	if rf.state == CANDIDATE && args.Term >= rf.currentTerm {
-		// color.New(color.FgRed).Printf("(%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
+		color.New(color.FgRed).Printf("AEReceiver (%v)[%d][%v]: received a larger term: %v (received term), stepping down from %v to Follower\n", rf.state, rf.me, rf.currentTerm, args.Term, rf.state)
 		rf.convertToFollower(args.Term)
 	}
 	rf.mu.Unlock()
@@ -154,7 +190,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	//     list of entries
 	///////////////////////////////////////////////////////////////////////////
 	if args.PrevLogIndex >= len(rf.log) {
-		color.New(color.FgRed).Printf("(%v)[%v][%d]: PrevLogIndex DNE, Leader[%v][%v]: index: %v, term: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm)
+		color.New(color.FgRed).Printf("AEReceiver (%v)[%v][%d]: PrevLogIndex DNE, Leader[%v][%v]: index: %v, term: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		reply.ConflictIndex = len(rf.log)
@@ -175,7 +211,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		for firstOcc := args.PrevLogIndex; rf.log[firstOcc].Term == reply.ConflictTerm && firstOcc >= 0; firstOcc-- {
 			reply.ConflictIndex = firstOcc
 		}
-		color.New(color.FgRed).Printf("(%v)[%v][%d]: Terms Conflict, ConflictIndex %v Leader[%v][%v]: index: %v, term: %v\n", rf.state, rf.me, rf.currentTerm, reply.ConflictIndex, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm)
+		color.New(color.FgRed).Printf("AEReceiver (%v)[%v][%d]: Terms Conflict, ConflictIndex %v Leader[%v][%v]: index: %v, term: %v\n", rf.state, rf.me, rf.currentTerm, reply.ConflictIndex, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm)
 		return
 	}
 
@@ -209,10 +245,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	for ; leaderIdx < len(args.Entries) && peerIdx < len(rf.log); leaderIdx, peerIdx = leaderIdx+1, peerIdx+1 {
 		if rf.entriesConflict(args.Entries, leaderIdx, peerIdx) {
-			color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+			color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log(len=%v) before: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, len(rf.log), rf.log)
 			rf.truncateLog(peerIdx)
 			rf.persist()
-			color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, rf.log)
+			color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: received AE from leader: %v, term: %v. Truncating log(len=%v) after: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, len(rf.log), rf.log)
 			break
 		}
 	}
@@ -252,7 +288,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = minOf(args.LeaderCommit, len(rf.log)-1)
 	}
-	color.New(color.FgGreen).Printf("(%v)[%v][%v]: received AE from leader: %v, term: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+	color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: received AE from leader: %v, term: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
 	fmt.Printf("(%v)[%v][%v]: Commit Index %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex)
 	fmt.Printf("(%v)[%v][%v]: Log %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
 	fmt.Println("")
