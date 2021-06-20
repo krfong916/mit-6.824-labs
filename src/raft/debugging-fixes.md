@@ -88,14 +88,14 @@ Our tests fail because the peer's within our cluster have incorrect logs when we
 
 - There were two bugs in our implementation of our protocol
 - 1: We made a distinction between heartbeats and AppendEntries in our mental model. This is wrong, and as a result, we incorrectly implemented the sending and receiving methods. First, we assumed heartbeats contained no entries, therefore, we sent AppendEntries with no entries. Second, if a follower accepted a heartbeat and resolved conflicting entries, the leader did not update their commit index. In order to correct our protocol, heartbeats sent entries for followers lagging behind, and we updated the leader's commit index if they received a successful reply
-  - The bugs in our protocol presented itself when we tested under unreliable network conditions. Under normal operation, all AppendEntries were sent, delivered, and replicated amongst peers with no issue. However, under failure, we had logs that were incorrect.
-- 2: We corrected our implementation of the accelerated log optimization protocol
-  - The issue: we would incorrectly accept an AppendEntry request (Heartbeats)
-    - We introduce a network partition between Leader A and the cluster
-    - Follower B comes to candidacy and is granted leadership
-    - Leader B makes progress
-    - The partition is resolved, Leader A rejoins
-    - Leader A receives an RPC with a term higher and steps down to Follower
-    - Follower A has an outdated log
-    - Follower A receives a heartbeat message. Here is where the source of our headaches occured - our log did not satisfy the log matching protocol: either the entry at PrevLogIndex did not have a matching term, or an entry at PrevLogIndex did not exist at all. We would incorrectly reply OK.
+  - The bugs in our protocol presented itself when we tested under unreliable network conditions. Under normal operation, all AppendEntries were sent, delivered, and replicated amongst peers with no issue. However, under failure, we had logs that were incorrect. Our testing failures were further compounded by the second bug in our Raft protocol - our implementation of the accelerate log optimization protocol
+- 2: The issue: we would incorrectly accept an AppendEntry request (Heartbeats)
+  - We introduce a network partition between Leader A and the cluster
+  - Follower B comes to candidacy and is granted leadership
+  - Leader B makes progress
+  - The partition is resolved, Leader A rejoins
+  - Leader A receives an RPC with a term higher and steps down to Follower
+  - Follower A has an outdated log
+  - Follower A receives a heartbeat message. Here is where the source of our headaches occured - our log did not satisfy the log matching protocol: either the entry at PrevLogIndex did not have a matching term, or an entry at PrevLogIndex did not exist at all and we would incorrectly reply OK. Secondly, we would perform step 5 and update our commit index.
   - In order to performs the safety checks outlined in Figure 2, we needed to reply false and reply with the conflicting index and term WITHOUT
+- We corrected our implementation of the accelerated log optimization protocol
