@@ -1,13 +1,16 @@
 package kvraft
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
 
+	"../labrpc"
+)
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	servers  []*labrpc.ClientEnd
+	leaderID int
 }
 
 func nrand() int64 {
@@ -20,40 +23,68 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// You'll have to add code here.
+	ck.leaderID = nrand() % len(servers)
 	return ck
 }
 
-//
-// fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
-//
 func (ck *Clerk) Get(key string) string {
+	// prepare args
+	args := &GetArgs{
+		Key: key,
+		Op:  "Get",
+	}
+	reply := &GetReply{}
 
-	// You will have to modify this function.
-	return ""
+	// RPC call to the server
+	ok := ck.servers[i].Call("KVServer.Get", args, reply)
+
+	if reply.Err == ErrNoKey {
+		return ""
+	}
+
+	// retry if we can't contact the server or our RPC call wasn't to the leader
+	if !ok || reply.Err == ErrWrongLeader {
+		rf.getLeaderId()
+		ok = ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return reply.Value
 }
 
-//
-// shared by Put and Append.
-//
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
-//
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	// prepare args
+	args := &PutAppendArgs{
+		Key:   key,
+		Value: value,
+		Op:    op,
+	}
+	reply := &PutAppendReply{}
+
+	// RPC call to the server
+	ok := ck.servers[leaderID].Call("KVServer.PutAppend", args, reply)
+
+	// retry if we can't contact the server or our RPC call wasn't to the leader
+	for !ok || reply.Err == ErrWrongLeader {
+		rf.getLeaderId()
+		ok = ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (ck *Clerk) getLeaderId() {
+	if ck.leaderID != reply.leaderID {
+		ck.leaderID = reply.leaderID
+	} else {
+		ck.getRandomServer()
+	}
+}
+
+func (ck *Clerk) getRandomServer() {
+	oldLeaderID := ck.leaderId
+	for oldLeaderID == ck.leaderId {
+		ck.leaderId = nrand() % len(ck.servers)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
