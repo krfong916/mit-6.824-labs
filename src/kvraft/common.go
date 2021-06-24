@@ -8,12 +8,12 @@ const (
 
 type Err string
 
-// Put or Append
 type PutAppendArgs struct {
 	Key          string
 	Value        string
 	Op           string // "Put" or "Append"
 	SerialNumber int
+	ClientID     int
 }
 
 type PutAppendReply struct {
@@ -24,6 +24,7 @@ type GetArgs struct {
 	Key          string
 	Op           string
 	SerialNumber int
+	ClientID     int
 }
 
 type GetReply struct {

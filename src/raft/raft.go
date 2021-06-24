@@ -74,7 +74,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.setElectionTimeout()
 	rf.readPersist(persister.ReadRaftState())
 	go rf.kickOffElectionTimeout()
-	go rf.attemptCommitEntry()
+	go rf.appendEntry()
 	go rf.applyEntry()
 	return rf
 }
@@ -129,7 +129,8 @@ func sleep() {
 func (rf *Raft) checkTimeElapsed() {
 	rf.mu.Lock()
 	elapsed := time.Now().After(rf.electionTimeout)
-	// renew our lease as Leader
+	/* as a leader, reset our own election timeout in order to prevent ourselves from
+	   striking an election */
 	isLeader := false
 	if elapsed && rf.state == LEADER {
 		rf.setElectionTimeout()
@@ -168,6 +169,7 @@ func (rf *Raft) performLeaderElection() {
 			continue
 		}
 
+		// Send RequestVotes in parallel
 		go func(peer int) {
 			rf.mu.Lock()
 			// color.New(color.FgMagenta).Printf("Candidate[%v][%v]: sent a request vote to %v\n", rf.me, rf.currentTerm, peer)
@@ -260,10 +262,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// color.New(color.FgWhite).Printf("CReq (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
 	index := len(rf.log) - 1
 	term = rf.currentTerm
-
-	// Update our own matchIndex, we use ourself to count whether or not an entry has been replicated on a majority of peers
+	// Update our own matchIndex, we use our own matchIndex to count whether or not an entry has been replicated on a majority of nodes
 	rf.matchIndex[rf.me] = len(rf.log) - 1
-
 	rf.persist()
 
 	if rf.state == LEADER {
@@ -274,21 +274,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 }
 
-func (rf *Raft) getEntriesLength(peer int) int {
-	if rf.nextIndex[peer] > len(rf.log) {
-		return 0
-	} else {
-		return (len(rf.log) - rf.nextIndex[peer]) + 1
-	}
-}
-
 /**
- * attemptCommitEntry is a long-running goroutine for replicating entries on a peer.
- * If the peer's log is up-to-date, then we prevent sending new AppendEntries to the peer.
+ * appendEntry is a long-running goroutine for replicating entries on a peer and sending Heartbeats.
  * One way to interpret replicating an entry on a peer: it's the peer's way
  * of pledging allegiance to the leader.
  */
-func (rf *Raft) attemptCommitEntry() {
+func (rf *Raft) appendEntry() {
 	for !rf.killed() {
 		if _, isLeader := rf.GetState(); isLeader {
 			for peer := 0; peer < len(rf.peers); peer++ {
@@ -394,6 +385,14 @@ func (rf *Raft) attemptCommitEntry() {
 	}
 }
 
+func (rf *Raft) getEntriesLength(peer int) int {
+	if rf.nextIndex[peer] > len(rf.log) {
+		return 0
+	} else {
+		return (len(rf.log) - rf.nextIndex[peer]) + 1
+	}
+}
+
 func (rf *Raft) calculateCommitIndex() {
 	arr := make([]int, 0, len(rf.matchIndex))
 	for _, idx := range rf.matchIndex {
@@ -401,6 +400,7 @@ func (rf *Raft) calculateCommitIndex() {
 	}
 	sort.Ints(arr)
 	newCommitIndex := -1
+	// Different calculation for odd and even length logs
 	if len(arr)%2 == 0 {
 		newCommitIndex = arr[((len(arr)-1)/2)+1]
 	} else {

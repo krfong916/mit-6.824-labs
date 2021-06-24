@@ -72,6 +72,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	return
 }
 
+// The paper defines "up-to-date" in the following way:
+// - if the last entries have the same index and different terms, then the log with the later term is up-to-date
+// - if the logs entries end with the same term, then the log with the higher index is more up-to-date
 func (rf *Raft) isUpToDate(candidateTerm int, candidateIndex int) bool {
 	lastIndex, lastTerm := rf.getLastLogIndex(), rf.getLastLogTerm()
 	// color.New(color.FgCyan).Printf("RVReceiver (%v)[%v][%d]: candidateTerm= %v, lastTerm= %v, candidateIndex= %v, lastIndex= %v\n", rf.state, rf.me, rf.currentTerm, candidateTerm, lastTerm, candidateIndex, lastIndex)
@@ -113,6 +116,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.convertToFollower(args.Term)
 	}
 
+	/* At this point, it's implied that we share the same term as the leader */
+
 	// Section 5.2 a candidate or follower may receive an AE RPC from
 	// another server claiming to be leader. If the leader's term is at
 	// least as large as the candidate's then the candidate recognizes the
@@ -133,10 +138,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Rule 3
 	// We've now established follower's log DOES contain the PreviousLogIndex
-	//   but perhaps not a matching entry. Our goal now is to satisfy the Log
-	//   Matching Property. If an existing entry in this peers' log conflicts
-	//   with an entry in entries[] (same index, but different term), delete
-	//   the existing entry and all that follow it
+	// but perhaps not a matching entry. Our goal now is to satisfy the Log
+	// Matching Property. If an existing entry in this peers' log conflicts
+	// with an entry in entries[] (same index, but different term), delete
+	// the existing entry and all that follow it
 	if satisfiesLogMatchingProperty {
 
 		reply.Success = true
@@ -154,10 +159,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		// Rule 4
-		// We've resolved all conflicting entries that may exist between the leader
+		// - We've resolved all conflicting entries that may exist between the leader
 		//   and this peer. Now, append any remaining entries to this peer.
 		//   i.e. Tack on the new entries that the leader wants us to replicate.
-		// We choose the method of making a new slice and copying the contents over
+		// - We choose the method of making a new slice and copying the contents over
 		//   because we want to free the current slice/underlying array that is
 		//   being referenced by rf.log, in order for this outdated log to be
 		//   garbage collected. Granted, this method has a linear complexity,
@@ -177,17 +182,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// Rule 5
 		// Update the commit index of the follower.
 		// Before this code, we've used the Leader's entries arr to replicate
-		//   new entries on this peer. The last entry that we've replicated is
-		//   the last log entry on this peer's log. As a result, update this
-		//   peer's commit index.
+		// new entries on this peer. The last entry that we've replicated is
+		// the last log entry on this peer's log. As a result, update this
+		// peer's commit index.
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = minOf(args.LeaderCommit, len(rf.log)-1)
 		}
 	} else if !satisfiesLogMatchingProperty && containsLogIndex {
-		//  Accelerated log optimization protocol:
-		//  If the previous log index exists within our log, but the term doesn't
-		//    match, return the conflicting term, search the follower's log for
-		//    the *first* index whose entry has term equal to the conflicting term
+		// Accelerated log optimization protocol:
+		// If the previous log index exists within our log, but the term doesn't
+		// match, return the conflicting term, search the follower's log for
+		// the *first* index whose entry has term equal to the conflicting term
 		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
 		for firstOcc := args.PrevLogIndex; firstOcc >= 0 && rf.log[firstOcc].Term == reply.ConflictTerm; firstOcc-- {
 			reply.ConflictIndex = firstOcc
@@ -197,12 +202,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// color.New(color.FgRed).Printf("AEReceiver (%v)[%v][%d]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
 
 	} else if !satisfiesLogMatchingProperty && !containsLogIndex {
-		// Credit to Jon Gjengset @jonhoo
+		// Accelerated log optimization protocol:
+		// - If the previous log index does not exist within our log, the leader
+		//   will update prevlogindex with conflictIndex and resend the updated
+		//   list of entries
+		// - Credit to Jon Gjengset @jonhoo
 		//   https://thesquareplanet.com/blog/students-guide-to-raft/
-		//   Accelerated log optimization protocol:
-		//   If the previous log index does not exist within our log, the leader
-		//     will update prevlogindex with conflictIndex and resend the updated
-		//     list of entries
 		reply.ConflictIndex = len(rf.log)
 		/* reply.ConflictTerm = None */
 	}
