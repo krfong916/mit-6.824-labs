@@ -3,7 +3,6 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
-	"time"
 
 	"../labrpc"
 )
@@ -11,6 +10,7 @@ import (
 type Clerk struct {
 	servers  []*labrpc.ClientEnd
 	leaderID int
+	me       int
 }
 
 func nrand() int64 {
@@ -23,20 +23,23 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.leaderID = nrand() % len(servers)
+	ck.leaderID = int(nrand()) % len(servers) // assign a random server at runtime
+	ck.me = int(nrand())                      // generate a unique ID for this client, server uses this ID to identify a client's request/maintain information
+
 	return ck
 }
 
 func (ck *Clerk) Get(key string) string {
 	// prepare args
 	args := &GetArgs{
-		Key: key,
-		Op:  "Get",
+		Key:      key,
+		Op:       "GET",
+		ClientID: ck.me,
 	}
 	reply := &GetReply{}
 
 	// RPC call to the server
-	ok := ck.servers[i].Call("KVServer.Get", args, reply)
+	ok := ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
 
 	if reply.Err == ErrNoKey {
 		return ""
@@ -44,9 +47,8 @@ func (ck *Clerk) Get(key string) string {
 
 	// retry if we can't contact the server or our RPC call wasn't to the leader
 	if !ok || reply.Err == ErrWrongLeader {
-		rf.getLeaderId()
+		ck.assignNewLeader()
 		ok = ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
-		time.Sleep(10 * time.Millisecond)
 	}
 
 	return reply.Value
@@ -55,41 +57,41 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// prepare args
 	args := &PutAppendArgs{
-		Key:   key,
-		Value: value,
-		Op:    op,
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		ClientID: ck.me,
 	}
 	reply := &PutAppendReply{}
 
 	// RPC call to the server
-	ok := ck.servers[leaderID].Call("KVServer.PutAppend", args, reply)
+	ok := ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
 
 	// retry if we can't contact the server or our RPC call wasn't to the leader
 	for !ok || reply.Err == ErrWrongLeader {
-		rf.getLeaderId()
+		ck.assignNewLeader()
 		ok = ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func (ck *Clerk) getLeaderId() {
-	if ck.leaderID != reply.leaderID {
-		ck.leaderID = reply.leaderID
-	} else {
-		ck.getRandomServer()
-	}
+func (ck *Clerk) assignNewLeader() {
+	// if ck.leaderID != reply.leaderID {
+	// 	ck.leaderID = reply.leaderID
+	// } else {
+	ck.assignRandomServer()
+	// }
 }
 
-func (ck *Clerk) getRandomServer() {
-	oldLeaderID := ck.leaderId
-	for oldLeaderID == ck.leaderId {
-		ck.leaderId = nrand() % len(ck.servers)
+func (ck *Clerk) assignRandomServer() {
+	oldLeaderID := ck.leaderID
+	for oldLeaderID == ck.leaderID {
+		ck.leaderID = nrand() % int64(len(ck.servers))
 	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.PutAppend(key, value, "PUT")
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.PutAppend(key, value, "APPEND")
 }

@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"../labgob"
-	"../labrpc"
+	"bytes"
 	"log"
-	"../raft"
 	"sync"
 	"sync/atomic"
+
+	"../labgob"
+	"../labrpc"
+	"../raft"
 )
 
 const Debug = 0
@@ -18,32 +20,104 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type ClientCommand string
+
+const (
+	PUT    = "PUT"
+	APPEND = "APPEND"
+	GET    = "GET"
+)
 
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Command ClientCommand
+}
+
+type ClientPayload struct {
+	SerialNumber int
+	Response     string
 }
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
-	dead    int32 // set by Kill()
+	mu                 sync.Mutex
+	me                 int
+	rf                 *raft.Raft
+	applyCh            chan raft.ApplyMsg
+	dead               int32                 // set by Kill()
+	maxraftstate       int                   // snapshot if log grows this big
+	kvStore            map[string]string     // in-memory key-value state machine
+	clientRequestStore map[int]ClientPayload // the largest serial number processed for each client (latest request) + the associated response
 
-	maxraftstate int // snapshot if log grows this big
-
-	// Your definitions here.
 }
 
+type RaftReply struct {
+	index    int
+	term     int
+	isLeader bool
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	kv.serviceRequest(args, reply)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	kv.serviceRequest(args, reply)
+}
+
+func (kv *KVServer) serviceRequest(args *PutAppendArgs, reply *PutAppendReply) {
+	if !hasKey(args.Key) {
+		reply.Err = ErrNoKey
+		return
+	}
+
+	raftReply := RaftInitReply{}
+
+	// submit the command to Raft
+	_, _, isLeader := kv.rf.Start(args)
+	raftReply.isLeader = isLeader
+
+	if !raftReply.isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	// Wait for the command to be replicated in the Raft cluster
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		raftCommittedReply <- kv.applyCh
+		wg.Done()
+	}()
+	wg.Wait()
+
+	// First check for Raft failure or leadership change
+	// based on the commitment reply
+	// i.e. compare the committed reply and the initial submit reply
+	// if we have mismatch terms, this implies Raft underwent a leadership change
+	// the initial leader that received our command is no longer leader of the cluster
+	if raftReply.term != raftCommittedReply.CommandTerm {
+		reply.Err = ErrWrongLeader // signal client to retry on a different server/Raft peer
+	}
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	switch args.Op {
+	case "PUT":
+		kv.kvStore[args.Key] = args.Value
+	case "APPEND":
+		var buffer bytes.Buffer
+		value := kv.kvStore[args.Key]
+		buffer.WriteString(value)
+		buffer.WriteString(args.Value)         // append
+		kv.kvStore[args.Key] = buffer.String() // write back to the kv store
+	case "GET":
+		reply.Value = kv.kvStore[args.Key]
+	}
+	return
+}
+
+func hasKey(str string) bool {
+	return str == ""
 }
 
 //
@@ -94,7 +168,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
+	kv.kvStore = make(map[string]string)
+	kv.clientRequestStore = make(map[string]string)
 	// You may need initialization code here.
 
 	return kv
