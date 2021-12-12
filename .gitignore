@@ -4,3 +4,6 @@ api.key
 .DS_Store
 .idea/
 src/main/*.txt
+src/raft/2A/
+src/raft/2B/
+src/raft/2C/

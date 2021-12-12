@@ -9,11 +9,11 @@ const (
 type Err string
 
 type PutAppendArgs struct {
-	Key          string
-	Value        string
-	Op           string // "Put" or "Append"
-	SerialNumber int
-	ClientID     int
+	Key       string
+	Value     string
+	Operation KVOperation // "Put" or "Append"
+	RequestID int
+	ClientID  int
 }
 
 type PutAppendReply struct {
@@ -21,13 +21,21 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key          string
-	Op           string
-	SerialNumber int
-	ClientID     int
+	Key       string
+	Operation KVOperation
+	RequestID int
+	ClientID  int
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
 }
+
+type KVOperation string
+
+const (
+	PUT    KVOperation = "PUT"
+	APPEND KVOperation = "APPEND"
+	GET    KVOperation = "GET"
+)
