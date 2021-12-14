@@ -1,5 +1,7 @@
 package raft
 
+import "github.com/fatih/color"
+
 type Entry struct {
 	Term    int         // The leader's term that requested this Entry to be replicated
 	Command interface{} // The client command to apply to the peer's state machine
@@ -97,7 +99,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: received an append entry request from [%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
+	color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: received an append entry request from [%v][%v]\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term)
 	// color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: Leader[%v][%v] sent args.PrevLogIndex=%v, args.PrevLogTerm=%v, args.LeaderCommit=%v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 	// color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: Leader[%v][%v] sent entries: %v\n", rf.state, rf.me, rf.currentTerm, args.LeaderId, args.Term, args.Entries)
 	// color.New(color.FgGreen).Printf("AEReceiver (%v)[%v][%v]: commitIndex=%v, lastApplied=%v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)

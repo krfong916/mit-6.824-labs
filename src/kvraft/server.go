@@ -2,6 +2,8 @@ package kvraft
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -24,9 +26,11 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 // Operation that Raft replicates
 type Operation struct {
-	Key   string
-	Value string
-	Op    KVOperation
+	Key       string
+	Value     string
+	Op        KVOperation
+	ClientID  int
+	RequestID int
 }
 
 // Client operation that the kv server records and executes just once
@@ -40,18 +44,20 @@ type KVServer struct {
 	me                     int
 	rf                     *raft.Raft
 	applyCh                chan raft.ApplyMsg
-	dead                   int32                     // set by Kill()
-	maxraftstate           int                       // snapshot if log grows this big
-	kvStore                map[string]string         // in-memory key-value state machine
-	result                 map[int](chan *Operation) // a map of buffered channels that is used to send the result of replicated client operations
-	clientOperationHistory map[int]ClientOperation   // the largest serial number processed for each client (latest request) + the associated response
+	dead                   int32                    // set by Kill()
+	maxraftstate           int                      // snapshot if log grows this big
+	kvStore                map[string]string        // in-memory key-value state machine
+	result                 map[int](chan Operation) // a map of buffered channels that is used to send the result of replicated client operations
+	clientOperationHistory map[int]ClientOperation  // the largest serial number processed for each client (latest request) + the associated response
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// prepare operation and response
-	op := &Operation{
-		Key: args.Key,
-		Op:  args.Operation,
+	op := Operation{
+		Key:       args.Key,
+		Op:        args.Operation,
+		ClientID:  args.ClientID,
+		RequestID: args.RequestID,
 	}
 
 	ok, value := kv.waitForOpToComplete(op)
@@ -68,12 +74,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// prepare operation and response
-	op := &Operation{
-		Key:   args.Key,
-		Value: args.Value,
-		Op:    args.Operation,
+	op := Operation{
+		Key:       args.Key,
+		Value:     args.Value,
+		Op:        args.Operation,
+		ClientID:  args.ClientID,
+		RequestID: args.RequestID,
 	}
-
+	color.New(color.FgWhite).Printf("[SERVER][%v] pending operation[%v] key: %v value: %v\n", kv.me, op.Op, op.Key, op.Value)
 	ok, _ := kv.waitForOpToComplete(op)
 
 	if !ok {
@@ -84,7 +92,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	return
 }
 
-func (kv *KVServer) waitForOpToComplete(op *Operation) (bool, string) {
+func (kv *KVServer) waitForOpToComplete(op Operation) (bool, string) {
 	// submit the operation to Raft
 	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
@@ -93,7 +101,7 @@ func (kv *KVServer) waitForOpToComplete(op *Operation) (bool, string) {
 
 	kv.mu.Lock()
 	if _, exists := kv.result[index]; !exists {
-		kv.result[index] = make(chan *Operation, 1)
+		kv.result[index] = make(chan Operation, 1)
 	}
 	kv.mu.Unlock()
 	// insert the channel in the map of channels
@@ -105,15 +113,25 @@ func (kv *KVServer) waitForOpToComplete(op *Operation) (bool, string) {
 	case operation := <-kv.result[index]:
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
-		color.New(color.FgGreen).Printf("Succeeded[%v] %v\n", kv.me, operation.Value)
-		color.New(color.FgGreen).Printf("from channel %v\n", operation.Value)
-		color.New(color.FgGreen).Printf("our request %v\n", op.Value)
+		color.New(color.FgGreen).Printf("Succeeded[%v] %v\n", kv.me, operation)
+		color.New(color.FgGreen).Printf("from channel, operation: %v\n", operation.Op)
+		color.New(color.FgGreen).Printf("from channel, value: %v\n", operation.Value)
 
-		return true, operation.Value
+		color.New(color.FgGreen).Printf("from channel, RequestID: %v\n", operation.RequestID)
+		color.New(color.FgGreen).Printf("from channel, ClientID: %v\n", operation.ClientID)
+		color.New(color.FgGreen).Printf("client request, RequestID: %v\n", op.RequestID)
+		color.New(color.FgGreen).Printf("client request, ClientID: %v\n", op.ClientID)
+
+		return isSameOperation(operation, op), operation.Value
 	case <-time.After(800 * time.Millisecond):
 		color.New(color.FgRed).Println("FAILED")
 		return false, ""
 	}
+}
+
+func isSameOperation(applyChannelOp Operation, clientOp Operation) bool {
+	return applyChannelOp.ClientID == clientOp.ClientID &&
+		applyChannelOp.RequestID == clientOp.RequestID
 }
 
 // We need this long-running task to commit commands to the state machine as they arrive on the apply channel
@@ -125,16 +143,24 @@ func (kv *KVServer) applyReplicatedCommands() {
 		// sometimes our Raft module may be the leader, other times it may be the follower
 		// when we receive a message, that means that the command has been replicated on a majority of
 		case applyChannelResponse := <-kv.applyCh:
-			color.New(color.FgMagenta).Printf("received on apply channel %v\n", applyChannelResponse)
+			color.New(color.FgMagenta).Printf("Server # %v received on apply channel %v\n", kv.me, applyChannelResponse)
 
 			index := applyChannelResponse.CommandIndex
-			op := applyChannelResponse.Command.(*Operation)
-			kv.mu.Lock()
+			op := applyChannelResponse.Command.(Operation)
+
 			// notify the channel that was waiting for the response
 			// i.e. send a response to that channel
-			kv.applyReplicatedOpToStateMachine(op)
-			kv.result[index] <- op
+
+			kv.mu.Lock()
+			color.New(color.FgRed).Printf("SERVER %v ACQUIRED LOCK\n", kv.me)
+			op.Value = kv.applyReplicatedOpToStateMachine(op)
+			if _, ok := kv.result[index]; !ok {
+				kv.result[index] = make(chan Operation, 1)
+			} else {
+				kv.result[index] <- op
+			}
 			kv.mu.Unlock()
+			color.New(color.FgRed).Printf("SERVER %v RELEASED THE LOCK\n", kv.me)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -142,19 +168,32 @@ func (kv *KVServer) applyReplicatedCommands() {
 }
 
 // This is the only function that "touches" the application state
-func (kv *KVServer) applyReplicatedOpToStateMachine(op *Operation) {
+func (kv *KVServer) applyReplicatedOpToStateMachine(op Operation) string {
+	var newValue string
 	color.New(color.FgMagenta).Printf("Applying Operation to state machine%v\n", op)
 	switch op.Op {
 	case "GET":
-		op.Value = kv.kvStore[op.Key]
+		newValue = kv.kvStore[op.Key]
 	case "PUT":
 		kv.kvStore[op.Key] = op.Value
+		newValue = op.Value
 	case "APPEND":
 		var buffer bytes.Buffer
 		buffer.WriteString(kv.kvStore[op.Key])
 		buffer.WriteString(op.Value)
 		newValue := buffer.String()
+		color.New(color.FgCyan).Printf("Newly appended value %v\n", newValue)
 		kv.kvStore[op.Key] = newValue
+	}
+	fmt.Println("server #", kv.me)
+	prettyPrint(kv.kvStore)
+	return newValue
+}
+
+func prettyPrint(v interface{}) (err error) {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err == nil {
+		fmt.Println(string(b))
 	}
 	return
 }
@@ -197,14 +236,14 @@ func (kv *KVServer) killed() bool {
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
-	labgob.Register(&Operation{})
+	labgob.Register(Operation{})
 
 	kv := new(KVServer)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 
 	kv.applyCh = make(chan raft.ApplyMsg, 1)
-	kv.result = make(map[int](chan *Operation))
+	kv.result = make(map[int](chan Operation))
 	kv.kvStore = make(map[string]string)
 	kv.clientOperationHistory = make(map[int]ClientOperation)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)

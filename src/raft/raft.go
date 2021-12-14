@@ -10,6 +10,7 @@ import (
 
 	"../labgob"
 	"../labrpc"
+	"github.com/fatih/color"
 )
 
 type ApplyMsg struct {
@@ -26,24 +27,24 @@ const (
 )
 
 func (rf *Raft) convertToFollower(term int) {
-	rf.currentTerm = term
-	rf.state = FOLLOWER
-	rf.votedFor = -1
-	rf.persist()
-	rf.setElectionTimeout()
+	rf.currentTerm = term   // update the current term
+	rf.state = FOLLOWER     // convert to follower
+	rf.votedFor = -1        // reset election vote
+	rf.persist()            // persist state for crash-recovery purposes
+	rf.setElectionTimeout() // reset election timeout
 }
 
 func (rf *Raft) convertToCandidate() {
-	rf.state = CANDIDATE
-	rf.votedFor = rf.me // Vote for ourself
-	rf.currentTerm += 1 // Initialize a term variable
-	rf.persist()
-	rf.setElectionTimeout()
+	rf.state = CANDIDATE    // convert to candidate
+	rf.votedFor = rf.me     // vote for ourself
+	rf.currentTerm += 1     // initialize a term variable
+	rf.persist()            // persist state for crash-recovery purposes
+	rf.setElectionTimeout() // reset election timeout
 }
 
 func (rf *Raft) convertToLeader() {
-	rf.state = LEADER
-	rf.setElectionTimeout()
+	rf.state = LEADER       // convert to leader
+	rf.setElectionTimeout() // reset election timeout
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 	for peer := 0; peer < len(rf.peers); peer++ {
@@ -145,9 +146,9 @@ func (rf *Raft) checkTimeElapsed() {
 
 func (rf *Raft) performLeaderElection() {
 	rf.mu.Lock()
-	// color.New(color.FgMagenta).Printf("[%v][%v][%v]: converting from %v -> Candidate\n", rf.state, rf.me, rf.currentTerm, rf.state)
+	color.New(color.FgWhite).Printf("[%v][%v][%v]: converting from %v -> Candidate\n", rf.state, rf.me, rf.currentTerm, rf.state)
 	rf.convertToCandidate()
-	// color.New(color.FgMagenta).Printf("Candidate[%v][%v]: starting an election: %v\n", rf.me, rf.currentTerm, rf.log)
+	color.New(color.FgWhite).Printf("Candidate[%v][%v]: starting an election: %v\n", rf.me, rf.currentTerm, rf.log)
 	args := &RequestVoteArgs{
 		CandidateId:  rf.me,
 		Term:         rf.currentTerm,
@@ -256,10 +257,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// color.New(color.FgWhite).Printf("CReq (%v)[%v][%v]: received client request: %v\n", rf.state, rf.me, rf.currentTerm, command)
+	// color.New(color.FgWhite).Printf("START (%v)[%v][%v]: received client request: %v\n", rf.state, rf.me, rf.currentTerm, command)
 
 	rf.log = append(rf.log, Entry{Term: rf.currentTerm, Command: command})
-	// color.New(color.FgWhite).Printf("CReq (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
+	color.New(color.FgWhite).Printf("START (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
 	index := len(rf.log) - 1
 	term = rf.currentTerm
 	// Update our own matchIndex, we use our own matchIndex to count whether or not an entry has been replicated on a majority of nodes
@@ -269,7 +270,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.state == LEADER {
 		return index, term, isLeader
 	} else {
-		// color.New(color.FgWhite).Printf("CReq (%v)[%v][%v]: no longer leader, cannot AppendEntry\n", rf.state, rf.me, rf.currentTerm)
+		// color.New(color.FgWhite).Printf("START (%v)[%v][%v]: no longer leader, cannot AppendEntry\n", rf.state, rf.me, rf.currentTerm)
 		return -1, term, isLeader
 	}
 }
@@ -281,7 +282,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
  */
 func (rf *Raft) appendEntry() {
 	for !rf.killed() {
-		if _, isLeader := rf.GetState(); isLeader {
+		if _, isLeader := rf.GetState(); isLeader && !rf.killed() {
 			for peer := 0; peer < len(rf.peers); peer++ {
 				if peer == rf.me {
 					continue
@@ -298,13 +299,13 @@ func (rf *Raft) appendEntry() {
 					}
 					args.Entries = append(rf.log[rf.nextIndex[peer]:])
 
-					// color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: AppendEntriesArgs: len(rf.log)=%v, rf.nextIndex[%v]=%v, len(entries)=%v\n", rf.state, rf.me, rf.currentTerm, len(rf.log), peer, rf.nextIndex[peer], len(args.Entries))
+					// color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: AppendEntriesArgs: len(rf.log)=%v, rf.nextIndex[%v]=%v, rf.matchIndex[%v]=%v, len(entries)=%v\n", rf.state, rf.me, rf.currentTerm, len(rf.log), peer, rf.nextIndex[peer], peer, rf.matchIndex[peer], len(args.Entries))
 					if rf.state != LEADER {
 						// color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: no longer leader, cannot send AppendEntries \n", rf.state, rf.me, rf.currentTerm)
 						rf.mu.Unlock()
 						return
 					}
-					// color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: sending an AE to %v, term: %v, index: %v\n", rf.state, rf.me, rf.currentTerm, peer, args.PrevLogTerm, args.PrevLogIndex)
+					color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: sending an AE to %v, term: %v, index: %v\n", rf.state, rf.me, rf.currentTerm, peer, args.PrevLogTerm, args.PrevLogIndex)
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
 					rf.sendAppendEntries(peer, args, reply)
@@ -341,11 +342,11 @@ func (rf *Raft) appendEntry() {
 								}
 							}
 							if !found {
-								// color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
+								color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
 								rf.nextIndex[peer] = reply.ConflictIndex
 							}
 						} else if reply.ConflictIndex > 0 && reply.ConflictTerm == 0 {
-							// color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
+							color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
 							rf.nextIndex[peer] = reply.ConflictIndex
 						}
 					}
@@ -379,9 +380,10 @@ func (rf *Raft) appendEntry() {
 					}
 				}(peer)
 			}
-			time.Sleep(150 * time.Millisecond)
+			color.New(color.FgCyan).Printf("[%v][%v] sleep\n", rf.state, rf.me)
+			time.Sleep(100 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -432,12 +434,11 @@ func (rf *Raft) applyEntry() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  entry.Term,
 				}
-				// color.New(color.FgBlue).Printf("APPL (%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
+				color.New(color.FgBlue).Printf("Send on apply channel (%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				rf.applyCh <- msg
-
 			}
 			// color.New(color.FgBlue).Printf("APPL (%v)[%v][%v]: Final state commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
-			// color.New(color.FgWhite).Printf("APPL (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
+			color.New(color.FgWhite).Printf("APPL (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
 			rf.mu.Unlock()
 		}
 		time.Sleep(10 * time.Millisecond)
