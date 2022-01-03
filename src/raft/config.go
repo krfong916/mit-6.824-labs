@@ -15,7 +15,7 @@ import (
 	"sync"
 	"testing"
 
-	"../labrpc"
+	"github.com/krfong916/mit-6.824-labs/src/labrpc"
 
 	crand "crypto/rand"
 	"encoding/base64"

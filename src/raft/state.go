@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"../labrpc"
+	"github.com/krfong916/mit-6.824-labs/src/labrpc"
 )
 
 type Raft struct {

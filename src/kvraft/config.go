@@ -4,8 +4,6 @@ import (
 	"os"
 	"testing"
 
-	"../labrpc"
-
 	crand "crypto/rand"
 	"encoding/base64"
 	"fmt"
@@ -16,7 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../raft"
+	"github.com/krfong916/mit-6.824-labs/src/labrpc"
+	"github.com/krfong916/mit-6.824-labs/src/raft"
 )
 
 func randstring(n int) string {

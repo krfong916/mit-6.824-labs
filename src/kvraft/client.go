@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"../labrpc"
 	"github.com/fatih/color"
+	"github.com/krfong916/mit-6.824-labs/src/labrpc"
+	// "github.com/fatih/color"
 )
 
 type Clerk struct {
@@ -45,18 +46,29 @@ func (ck *Clerk) Get(key string) string {
 	}
 	ck.mu.Unlock()
 	reply := &GetReply{}
-	// color.New(color.FgYellow).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
-
+	color.New(color.FgYellow).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
 	for {
-		color.New(color.FgYellow).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
+		// color.New(color.FgYellow).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
 		ok := ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
 		if ok && reply.Err != ErrWrongLeader {
-			color.New(color.FgGreen).Printf("[GET_REQUEST][%v][%v]: ok[%v]\n ", args.ClientID, args.RequestID, reply.Value)
+			// color.New(color.FgGreen).Printf("[GET_REQUEST][%v][%v]: ok[%v]\n ", args.ClientID, args.RequestID, reply.Value)
 			return reply.Value
 		}
-		// retry if we can't contact the server or our RPC call wasn't to the leader
-		ck.assignNewLeader()
+
+		// our request can fail for a number of reasons:
+		// we can't contact the server (either because of network partition or leader failure),
+		// our RPC call wasn't made to the current leader,
+		// or we made a concurrent request and the server code made the choice to service a request other than ours,
+		// in the event of failure, retry
 		time.Sleep(10 * time.Millisecond)
+		// given that we sleep after making a request, when we wake, refresh the request id or server we believe to be the leader
+		if reply.Err != "" && reply.Err == ErrDuplicateRequest {
+			args.RequestID = ck.assignNewRequestID()
+		}
+		if reply.Err != "" && reply.Err == ErrWrongLeader {
+			ck.assignNewLeader()
+		}
+		reply.Err = ""
 	}
 }
 
@@ -74,16 +86,35 @@ func (ck *Clerk) PutAppend(key string, value string, op KVOperation) {
 	reply := &PutAppendReply{}
 	color.New(color.FgYellow).Printf("New Client Request[%v]: [PUT_APPEND_REQUEST]: %v\n", ck.me, args)
 	for {
-		color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: leaderID[%v], clientID[%v], requestID[%v], key[%v], value[%v]\n ", ck.leaderID, ck.me, args.RequestID, args.Key, args.Value)
+		// color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: leaderID[%v], clientID[%v], requestID[%v], key[%v], value[%v]\n ", ck.leaderID, ck.me, args.RequestID, args.Key, args.Value)
 		ok := ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
-		if ok && reply.Err != ErrWrongLeader {
+		if ok && reply.Err == OK {
 			return
 		}
-		color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: WRONG_LEADER leaderID[%v]\n", ck.leaderID)
-		// retry if we can't contact the server or our RPC call wasn't to the leader
-		ck.assignNewLeader()
+		// color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: WRONG_LEADER leaderID[%v]\n", ck.leaderID)
+
+		// our request can fail for a number of reasons:
+		// we can't contact the server (either because of network partition or leader failure),
+		// our RPC call wasn't made to the current leader,
+		// or we made a concurrent request and the server code made the choice to service a request other than ours,
+		// in the event of failure, retry
 		time.Sleep(10 * time.Millisecond)
+		// given that we sleep after making a request, when we wake, refresh the request id or server we believe to be the leader
+		if reply.Err != "" && reply.Err == ErrDuplicateRequest {
+			args.RequestID = ck.assignNewRequestID()
+		}
+		if reply.Err != "" && reply.Err == ErrWrongLeader {
+			ck.assignNewLeader()
+		}
+		reply.Err = ""
 	}
+}
+
+func (ck *Clerk) assignNewRequestID() int {
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	ck.requestID++
+	return ck.requestID
 }
 
 func (ck *Clerk) assignNewLeader() {

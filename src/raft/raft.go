@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
-	"github.com/fatih/color"
+	"github.com/krfong916/mit-6.824-labs/src/labgob"
+	"github.com/krfong916/mit-6.824-labs/src/labrpc"
+	// "github.com/fatih/color"
 )
 
 type ApplyMsg struct {
@@ -146,9 +146,9 @@ func (rf *Raft) checkTimeElapsed() {
 
 func (rf *Raft) performLeaderElection() {
 	rf.mu.Lock()
-	color.New(color.FgWhite).Printf("[%v][%v][%v]: converting from %v -> Candidate\n", rf.state, rf.me, rf.currentTerm, rf.state)
+	// color.New(color.FgWhite).Printf("[%v][%v][%v]: converting from %v -> Candidate\n", rf.state, rf.me, rf.currentTerm, rf.state)
 	rf.convertToCandidate()
-	color.New(color.FgWhite).Printf("Candidate[%v][%v]: starting an election: %v\n", rf.me, rf.currentTerm, rf.log)
+	// color.New(color.FgWhite).Printf("Candidate[%v][%v]: starting an election: %v\n", rf.me, rf.currentTerm, rf.log)
 	args := &RequestVoteArgs{
 		CandidateId:  rf.me,
 		Term:         rf.currentTerm,
@@ -260,7 +260,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// color.New(color.FgWhite).Printf("START (%v)[%v][%v]: received client request: %v\n", rf.state, rf.me, rf.currentTerm, command)
 
 	rf.log = append(rf.log, Entry{Term: rf.currentTerm, Command: command})
-	color.New(color.FgWhite).Printf("START (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
+	// color.New(color.FgWhite).Printf("START (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
 	index := len(rf.log) - 1
 	term = rf.currentTerm
 	// Update our own matchIndex, we use our own matchIndex to count whether or not an entry has been replicated on a majority of nodes
@@ -305,7 +305,7 @@ func (rf *Raft) appendEntry() {
 						rf.mu.Unlock()
 						return
 					}
-					color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: sending an AE to %v, term: %v, index: %v\n", rf.state, rf.me, rf.currentTerm, peer, args.PrevLogTerm, args.PrevLogIndex)
+					// color.New(color.FgYellow).Printf("AESender (%v)[%v][%v]: sending an AE to %v, term: %v, index: %v\n", rf.state, rf.me, rf.currentTerm, peer, args.PrevLogTerm, args.PrevLogIndex)
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
 					rf.sendAppendEntries(peer, args, reply)
@@ -342,11 +342,11 @@ func (rf *Raft) appendEntry() {
 								}
 							}
 							if !found {
-								color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
+								// color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
 								rf.nextIndex[peer] = reply.ConflictIndex
 							}
 						} else if reply.ConflictIndex > 0 && reply.ConflictTerm == 0 {
-							color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
+							// color.New(color.FgRed).Printf("AESender (%v)[%v][%v]: Peer[%v][%v] cannot find entry with the conflicting term[%v], using conflicting index: %v\n", rf.state, rf.me, rf.currentTerm, peer, reply.Term, args.Term, reply.ConflictIndex)
 							rf.nextIndex[peer] = reply.ConflictIndex
 						}
 					}
@@ -380,7 +380,7 @@ func (rf *Raft) appendEntry() {
 					}
 				}(peer)
 			}
-			color.New(color.FgCyan).Printf("[%v][%v] sleep\n", rf.state, rf.me)
+			// color.New(color.FgCyan).Printf("[%v][%v] sleep\n", rf.state, rf.me)
 			time.Sleep(100 * time.Millisecond)
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -434,11 +434,11 @@ func (rf *Raft) applyEntry() {
 					CommandIndex: rf.lastApplied,
 					CommandTerm:  entry.Term,
 				}
-				color.New(color.FgBlue).Printf("Send on apply channel (%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
+				// color.New(color.FgBlue).Printf("Send on apply channel (%v)[%v][%v]: updated lastapplied: %v, commitIndex: %v\n", rf.state, rf.me, rf.currentTerm, rf.lastApplied, rf.commitIndex)
 				rf.applyCh <- msg
 			}
 			// color.New(color.FgBlue).Printf("APPL (%v)[%v][%v]: Final state commitIndex: %v, lastApplied: %v\n", rf.state, rf.me, rf.currentTerm, rf.commitIndex, rf.lastApplied)
-			color.New(color.FgWhite).Printf("APPL (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
+			// color.New(color.FgWhite).Printf("APPL (%v)[%v][%v]: log: %v\n", rf.state, rf.me, rf.currentTerm, rf.log)
 			rf.mu.Unlock()
 		}
 		time.Sleep(10 * time.Millisecond)
