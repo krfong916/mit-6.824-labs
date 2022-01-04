@@ -3,19 +3,19 @@ package kvraft
 type Err string
 
 const (
-	OK                  Err = "OK"                  // client request was replicated, no errors to report!
-	ErrNoKey            Err = "ErrNoKey"            // no key exists within our key value store
-	ErrWrongLeader      Err = "ErrWrongLeader"      // a client amde a request to the server that's not the elader
-	ErrDuplicateRequest Err = "ErrDuplicateRequest" // a server has already serviced a request with the same request ID, as result of handling concurrent requests, failure recovery etc.
-	ErrTimedOut         Err = "ErrTimedOut"         // the Raft module could not replicate the request within the window fo time
+	OK              Err = "OK"              // client request was replicated, no errors to report!
+	ErrNoKey        Err = "ErrNoKey"        // no key exists within our key value store
+	ErrWrongLeader  Err = "ErrWrongLeader"  // a client amde a request to the server that's not the elader
+	ErrStaleRequest Err = "ErrStaleRequest" // a server has already serviced a request with the same or lower request ID. This can arise as a result of handling concurrent requests, failure recovery etc.
+	ErrTimedOut     Err = "ErrTimedOut"     // the Raft module could not replicate the request within the window fo time
 )
 
 type PutAppendArgs struct {
 	Key       string
 	Value     string
-	Operation KVOperation // "Put" or "Append"
+	Name      KVOperation // "Put" or "Append"
 	RequestID int
-	ClientID  int
+	ClientID  int64
 }
 
 type PutAppendReply struct {
@@ -24,9 +24,9 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key       string
-	Operation KVOperation
+	Name      KVOperation
 	RequestID int
-	ClientID  int
+	ClientID  int64
 }
 
 type GetReply struct {

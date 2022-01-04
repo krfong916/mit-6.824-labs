@@ -3,7 +3,6 @@ package kvraft
 import (
   "bytes"
   "encoding/json"
-  "fmt"
   "log"
   "sync"
   "sync/atomic"
@@ -24,47 +23,47 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
   return
 }
 
-// Operation that Raft replicates
+// Operation that Raft replicates.
 type Operation struct {
   Key       string
   Value     string
-  Op        KVOperation
-  ClientID  int
+  Name      KVOperation
+  ClientID  int64
   RequestID int
 }
 
-// Map of client operations that the kv server records before replicating
-// this structure ensures operations are ordered and executed just once
-type ClientOperation struct {
-  ClientID int
-  Op       KVOperation
+// An object that describes the client operation that has been replicated.
+type ReplicatedOperation struct {
+  Operation Operation
+  Err       Err
 }
 
+// The Key Value Service.
 type KVServer struct {
-  mu              sync.Mutex              // a shared lock for managing concurrent-accessed state and cache
-  me              int                     // our server ID
-  rf              *raft.Raft              // raft instance
-  applyCh         chan raft.ApplyMsg      // channel that the Raft module uses to send replicated operations to servers
-  dead            int32                   // set by Kill()
-  maxraftstate    int                     // snapshot if log grows this big
-  kvStore         map[string]string       // in-memory key-value store
-  clientOpHistory map[int]ClientOperation // the largest serial number processed for each client (latest request) + the associated response
-  opComplete      map[int](chan Operation)          // map of channels for replicated ops
-  // quit                   chan bool               // close long-running goroutines
+  mu                      sync.Mutex                         // a shared lock for managing concurrent-accessed state and cache
+  me                      int                                // our server ID
+  rf                      *raft.Raft                         // raft instance
+  applyCh                 chan raft.ApplyMsg                 // channel that the Raft module uses to send replicated operations to servers
+  dead                    int32                              // set by Kill()
+  maxraftstate            int                                // snapshot if log grows this big
+  kvStore                 map[string]string                  // in-memory key-value store
+  lastApplied             map[int64]int                      // the largest serial number processed for each client (latest request)
+  replicatedOperationsMap map[int](chan ReplicatedOperation) // map of channels for replicated ops
+  quit                    chan bool                          // close long-running goroutines
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
   // prepare operation and response
   op := Operation{
     Key:       args.Key,
-    Op:        args.Operation,
+    Name:      args.Name,
     ClientID:  args.ClientID,
     RequestID: args.RequestID,
   }
 
-  ok, value, err := kv.waitForOpToComplete(op)
+  value, err := kv.waitForOpToComplete(op)
 
-  if !ok {
+  if err != "" {
     reply.Err = err
   } else {
     reply.Value = value
@@ -73,29 +72,19 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
   return
 }
 
-func (kv *KVServer) keyExists(key string) bool {
-  kv.mu.Lock()
-  defer kv.mu.Unlock()
-  if _, present := kv.kvStore[key]; present == false {
-    return false
-  } else {
-    return true
-  }
-}
-
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
   // prepare operation and response
   op := Operation{
     Key:       args.Key,
     Value:     args.Value,
-    Op:        args.Operation,
+    Name:      args.Name,
     ClientID:  args.ClientID,
     RequestID: args.RequestID,
   }
-  color.New(color.FgCyan).Printf("[SERVER][%v] pending operation[%v] key: %v value: %v\n", kv.me, op.Op, op.Key, op.Value)
-  ok, _, err := kv.waitForOpToComplete(op)
+  color.New(color.FgCyan).Printf("[SERVER][%v] pending operation[%v] key: %v value: %v\n", kv.me, op.Name, op.Key, op.Value)
+  _, err := kv.waitForOpToComplete(op)
   // color.New(color.FgCyan).Printf("[SERVER][%v] completed operation[%v] key: %v value: %v status: %v\n", kv.me, op.Op, op.Key, op.Value, ok)
-  if !ok {
+  if err != "" {
     reply.Err = err
   } else {
     reply.Err = OK
@@ -103,210 +92,162 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
   return
 }
 
-func (kv *KVServer) waitForOpToComplete(op Operation) (bool, string, Err) {
+func (kv *KVServer) waitForOpToComplete(op Operation) (string, Err) {
   // submit the operation to Raft
-  _, _, isLeader := kv.rf.Start(op)
+  index, _, isLeader := kv.rf.Start(op)
   if !isLeader {
-    return false, "", ErrWrongLeader
+    return "", ErrWrongLeader
   }
+
   kv.mu.Lock()
-  if kv.seenOperation(op.RequestID) {
-    kv.mu.Unlock()
-    return false, "", ErrDuplicateRequest
-  }
-  clientOp := ClientOperation{
-    ClientID: op.ClientID,
-    Op:       op.Op,
-  }
-  kv.clientOpHistory[op.RequestID] = clientOp
-  kv.mu.Unlock()
-  
-  // insert the channel in the map of channels
+  // insert a new channel in the map of channels
   // how do we know when a request is finished so that we can notify the RPC?
-  // well, when the request IS finished, then we know
-  // exactly which channel to send the reply on
-  kv.mu.Lock()
-  if _, exists := kv.result[index]; !exists {
-    kv.result[index] = make(chan Operation, 1)
+  // well, when the client request has been replicated
+  // we'll receive on a channel contained in this map
+  replicatedOpsCh, exists := kv.replicatedOperationsMap[index]
+  if exists == false {
+    replicatedOpsCh = make(chan ReplicatedOperation, 1)
+    kv.replicatedOperationsMap[index] = replicatedOpsCh
   }
   kv.mu.Unlock()
 
-  /*
-     create a goroutine called handleResult
-     handleResult will handle the result of messages sent on the applyChannel and return the value received
-
-     create an unbuffered channel that is simply for reading
-     we'll send the result from applyChannel to this unbuffered channel
-     in this way: we are not reading and writing
-     we want the channel to be non-blocking
-
-     ch := make chan(bool)
-     go func() {
-       res := handleSthg()
-       ch <- res
-     }()
-
-     wait to receive on ch
-     select {
-     case ch <- res:
-     case <- time.After(ms):
-       close(ch)
-       or create two channels one for the send of a result and one for quit
-       return
-     }
-
-     create a channel if one does not already exist
-     pass the channel as an argument
-
-
-
-  */
-  readOpComplete := make(chan Operation, 1)
-  go func() {
-    res := kv.readReplicatedOp()
-    // color.New(color.FgGreen).Printf("from channel, operation: %v\n", res)
-    readOpComplete <- res
-  }()
-
-  for {
-    select {
-    case completedOp := <-readOpComplete:
-      sameOp := isSameOperation(completedOp, op)
-      color.New(color.FgGreen).Printf("COMPLETED, me: %v, operation: %v, requestID: %v, clientID: %v\n", kv.me, completedOp.Op, completedOp.RequestID, completedOp.ClientID)
-      color.New(color.FgWhite).Printf("COMPLETED, me: %v, value: %v\n", kv.me, completedOp.Value)
-      color.New(color.FgWhite).Printf("COMPLETED, me: %v, client request, RequestID: %v\n", kv.me, op.RequestID)
-      color.New(color.FgWhite).Printf("COMPLETED, me: %v, client request, ClientID: %v\n", kv.me, op.ClientID)
-      if sameOp {
-
-        return sameOp, completedOp.Value, OK
-      }
-
-    case <-time.After(800 * time.Millisecond):
-      color.New(color.FgRed).Println("FAILED")
-      close(readOpComplete)
-      return false, "", ErrTimedOut
-   }
-  }
-
-}func (kv *KVServer) seenOperation(requestID int) bool {
-  if _, exists := kv.clientOpHistory[requestID]; exists == true {
-    return true
-  } else {
-    return false
+  select {
+  case result := <-replicatedOpsCh:
+    completedOp := result.Operation
+    sameOp := isSameOperation(completedOp, op)
+    color.New(color.FgGreen).Printf("COMPLETED, me: %v, operation: %v, requestID: %v, clientID: %v\n", kv.me, completedOp.Name, completedOp.RequestID, completedOp.ClientID)
+    color.New(color.FgGreen).Printf("COMPLETED, me: %v, client request, RequestID: %v ClientID: %v\n", kv.me, op.RequestID, op.ClientID)
+    color.New(color.FgGreen).Printf("COMPLETED, me: %v, value: %v\n", kv.me, completedOp.Value)
+    if sameOp && result.Err == "" {
+      return completedOp.Value, ""
+    }
+    // fix what we return
+    return "", result.Err
+  case <-time.After(800 * time.Millisecond):
+    kv.mu.Lock()
+    delete(kv.replicatedOperationsMap, index)
+    kv.mu.Unlock()
+    color.New(color.FgRed).Println("FAILED")
+    return "", ErrTimedOut
   }
 }
-
-func (kv *KVServer) readReplicatedOp() Operation {
-  // kv.mu.Lock()
-  // defer kv.mu.Unlock()
-  return <-kv.opComplete
-}
-
-/*
-  declare a shared channel for the server instance
-
-  func handleSthg(ch) {
-    // use a mutex to read on the shared channel
-    // if there is a result on the shared channel
-    // send it to the channel as arg
-
-    consider channel blocking
-    buffered vs unbuffered channel
-
-    with this shared channel, we could receive ops that the client did not submit, but were applied to the server
-    also, if the channel was buffered, could it get full? the only way to drain is to read from it
-    would we have to wait until the next goroutine came about in order to read from it?
-    this issue arises because we have a timer that exits in the 800 ms frame
-
-    so suppose we create a thread to that calls this fn
-    the function returns the read from this channel
-    what if the channel takes over 800ms for a response?
-    we'd have a shared channel that has an item on it
-    and we'd close the channel that we send the result on
-    the code returns and the client receives a response
-
-    we wait until the next client req comes around to kick off a new goroutine
-    to read from the shared channel
-    we read from the shared channel, but that
-
-    but we could read many times from the channel.................. with the select case
-    it just has to be within the 800ms window
-    so there could be n-many req sitting on the channel that we could read from
-
-    we might have to wrap our select case statement in a for-loop
-    we need to drain the channel when other ops arrive on the channel
-
-    we need separate send and receive goroutines
-
-    // apply channel go routine will lock over the this shared channel and send on it
-  }
-
-*/
 
 func isSameOperation(applyChannelOp Operation, clientOp Operation) bool {
   return applyChannelOp.ClientID == clientOp.ClientID &&
     applyChannelOp.RequestID == clientOp.RequestID
 }
 
-// what if we're applying replicated commands but the client has already returned?
+// Checks whether or not a key exists in the store.
+func (kv *KVServer) keyExists(key string) bool {
+  kv.mu.Lock()
+  defer kv.mu.Unlock()
+  _, present := kv.kvStore[key]
+  return present
+}
+
+// Applies replicated commands to the kv store, if applicable,
+// and sends the result of this application to the corresponding channel waiting to synchronize with the result.
 func (kv *KVServer) applyReplicatedCommands() {
   for !kv.killed() {
     select {
     case applyChannelResponse := <-kv.applyCh:
       color.New(color.FgMagenta).Printf("Server # %v received on apply channel %v\n", kv.me, applyChannelResponse)
-      op := applyChannelResponse.Command.(Operation)
-
-      // color.New(color.FgRed).Printf("ApplyReplica %v ACQUIRED LOCK\n", kv.me)
       kv.mu.Lock()
-      op.Value = kv.applyReplicatedOpToStateMachine(op)
-      kv.mu.Unlock()
-      // color.New(color.FgRed).Printf("ApplyReplica %v RELEASED THE LOCK\n", kv.me)
+      op := applyChannelResponse.Command.(Operation)
+      index := applyChannelResponse.CommandIndex
+      result := ReplicatedOperation{Operation: op}
 
-      // drain op-complete channel of any previous, stale client requests
-    DRAIN_CHANNEL:
-      for {
-        select {
-        case <-kv.opComplete:
-        default:
-          break DRAIN_CHANNEL
+      // Apply operation to the state machine
+      if op.Name == "GET" {
+        value, err := kv.applyReplicatedOpToStateMachine(op)
+        if err != "" {
+          result.Err = err
+        } else {
+          result.Operation.Value = value
+        }
+      } else {
+        if kv.isStaleRequest(op.RequestID, op.ClientID) {
+          result.Err = ErrStaleRequest
+        } else {
+          value, _ := kv.applyReplicatedOpToStateMachine(op)
+          result.Operation.Value = value
+          kv.lastApplied[op.ClientID] = op.RequestID
         }
       }
-      // send the replicated op to the op-complete channel
-      kv.opComplete <- op
 
+      kv.notifyReplicatedOpCh(index, result)
+      kv.mu.Unlock()
+    // case <-kv.quit:
+    //   return
     default:
       time.Sleep(10 * time.Millisecond)
     }
   }
 }
 
+func (kv *KVServer) notifyReplicatedOpCh(index int, result ReplicatedOperation) {
+  // Send the replicated operation result on the replicated result channel
+  replicatedOpsCh, exists := kv.replicatedOperationsMap[index]
+  if exists == false {
+    replicatedOpsCh = make(chan ReplicatedOperation, 1)
+    kv.replicatedOperationsMap[index] = replicatedOpsCh
+  } else if exists == true && len(replicatedOpsCh) == 1 {
+    color.New(color.FgRed).Println("DRAINING")
+  DRAIN_CHANNEL:
+    for {
+      select {
+      case <-replicatedOpsCh:
+      default:
+        break DRAIN_CHANNEL
+      }
+    }
+  }
+
+  kv.replicatedOperationsMap[index] <- result
+}
+
 // This is the only function that "touches" the application state
-func (kv *KVServer) applyReplicatedOpToStateMachine(op Operation) string {
-  var newValue string
-  // color.New(color.FgMagenta).Printf("Applying Operation to state machine%v\n", op)
-  switch op.Op {
+func (kv *KVServer) applyReplicatedOpToStateMachine(op Operation) (string, Err) {
+  var value string
+  var error Err
+  color.New(color.FgMagenta).Printf("Applying Operation to state machine%v\n", op)
+  switch op.Name {
   case "GET":
-    newValue = kv.kvStore[op.Key]
+    val, ok := kv.kvStore[op.Key]
+    if !ok {
+      error = ErrNoKey
+    } else {
+      value = val
+    }
   case "PUT":
+    value = op.Value
     kv.kvStore[op.Key] = op.Value
-    newValue = op.Value
   case "APPEND":
     var buffer bytes.Buffer
     buffer.WriteString(kv.kvStore[op.Key])
     buffer.WriteString(op.Value)
-    newValue := buffer.String()
-    // color.New(color.FgCyan).Printf("Newly appended value %v\n", newValue)
-    kv.kvStore[op.Key] = newValue
+    value := buffer.String()
+    color.New(color.FgCyan).Printf("Newly appended value %v\n", value)
+    kv.kvStore[op.Key] = value
   }
-  fmt.Println("server #", kv.me)
+  color.New(color.FgWhite).Printf("server #%v\n", kv.me)
   prettyPrint(kv.kvStore)
-  return newValue
+  return value, error
+}
+
+func (kv *KVServer) isStaleRequest(requestID int, clientID int64) bool {
+  lastApplied, present := kv.lastApplied[clientID]
+  if !present {
+    return false
+  } else {
+    return lastApplied >= requestID
+  }
 }
 
 func prettyPrint(v interface{}) (err error) {
   b, err := json.MarshalIndent(v, "", "  ")
   if err == nil {
-    fmt.Println(string(b))
+    color.New(color.FgWhite).Printf("%v\n", string(b))
   }
   return
 }
@@ -324,7 +265,6 @@ func prettyPrint(v interface{}) (err error) {
 func (kv *KVServer) Kill() {
   atomic.StoreInt32(&kv.dead, 1)
   kv.rf.Kill()
-  // Your code here, if desired.
   // kv.quit <- true
 }
 
@@ -357,11 +297,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
   kv.maxraftstate = maxraftstate
 
   kv.applyCh = make(chan raft.ApplyMsg, 1)
-  // kv.quit = make(chan bool)
-  // kv.result = make(map[int](chan Operation))
-  kv.opComplete = make(chan Operation, 1)
+  kv.replicatedOperationsMap = make(map[int](chan ReplicatedOperation))
   kv.kvStore = make(map[string]string)
-  kv.clientOpHistory = make(map[int]ClientOperation)
+  kv.lastApplied = make(map[int64]int)
+  kv.quit = make(chan bool)
   kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
   // initialize long-running tasks
@@ -369,7 +308,3 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
   return kv
 }
-
-// operation
-// index
-//
