@@ -209,16 +209,16 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			for atomic.LoadInt32(&done_clients) == 0 {
 				if (rand.Int() % 1000) < 500 {
 					nv := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-					// log.Printf("[TEST_SUITE][%d] client append %v\n", cli, nv)
+					log.Printf("[TEST_SUITE][%d] client append %v\n", cli, nv)
 					Append(cfg, myck, key, nv)
-					// log.Printf("[TEST_SUITE][%d] client append successful\n", cli)
+					log.Printf("[TEST_SUITE][%d] client append successful\n", cli)
 					last = NextValue(last, nv)
 					j++
 				} else {
 					// log.Printf("[TEST_SUITE][%d] client get[%v]\n", cli, key)
-					// log.Printf("%d: client new get %v\n", cli, key)
+					log.Printf("%d: client new get %v\n", cli, key)
 					v := Get(cfg, myck, key)
-					// log.Printf("[TEST_SUITE][%d] client get[%v] success\n", cli, key)
+					log.Printf("[TEST_SUITE][%d] client get[%v] success\n", cli, key)
 					if v != last {
 						log.Fatalf("get wrong value, key %v, wanted:\n%v\n, got\n%v\n", key, last, v)
 					}
@@ -463,10 +463,10 @@ func GenericTestLinearizability(t *testing.T, part string, nclients int, nserver
 // 	GenericTest(t, "3A", 5, false, false, false, -1)
 // }
 
-func TestUnreliable3A(t *testing.T) {
-	// Test: unreliable net, many clients (3A) ...
-	GenericTest(t, "3A", 5, true, false, false, -1)
-}
+// func TestUnreliable3A(t *testing.T) {
+// 	// Test: unreliable net, many clients (3A) ...
+// 	GenericTest(t, "3A", 5, true, false, false, -1)
+// }
 
 // func TestUnreliableOneKey3A(t *testing.T) {
 // 	const nservers = 3
@@ -613,10 +613,10 @@ func TestUnreliable3A(t *testing.T) {
 // 	GenericTest(t, "3A", 5, true, true, true, -1)
 // }
 
-// func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
-// 	// Test: unreliable net, restarts, partitions, linearizability checks (3A) ...
-// 	GenericTestLinearizability(t, "3A", 15, 7, true, true, true, -1)
-// }
+func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
+	// Test: unreliable net, restarts, partitions, linearizability checks (3A) ...
+	GenericTestLinearizability(t, "3A", 15, 7, true, true, true, -1)
+}
 
 // //
 // // if one server falls behind, then rejoins, does it

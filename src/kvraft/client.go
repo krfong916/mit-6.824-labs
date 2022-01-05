@@ -44,9 +44,10 @@ func (ck *Clerk) Get(key string) string {
     RequestID: ck.requestID,
   }
   ck.mu.Unlock()
-  reply := &GetReply{}
-  color.New(color.FgYellow).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
+
+  color.New(color.FgMagenta).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
   for {
+    reply := &GetReply{}
     ok := ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
     if ok && reply.Err == OK {
       return reply.Value
@@ -59,7 +60,6 @@ func (ck *Clerk) Get(key string) string {
     time.Sleep(10 * time.Millisecond)
     // given that we sleep after making a request, when we wake, reassign the server we believe to be the leader
     ck.assignNewLeader()
-    reply.Err = ""
   }
 }
 
@@ -74,9 +74,9 @@ func (ck *Clerk) PutAppend(key string, value string, op KVOperation) {
     RequestID: ck.requestID,
   }
   ck.mu.Unlock()
-  reply := &PutAppendReply{}
-  color.New(color.FgYellow).Printf("New Client Request[%v]: [PUT_APPEND_REQUEST]: %v\n", ck.me, args)
+  color.New(color.FgMagenta).Printf("New Client Request[%v]: [PUT_APPEND_REQUEST]: %v\n", ck.me, args)
   for {
+    reply := &PutAppendReply{}
     // color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: leaderID[%v], clientID[%v], requestID[%v], key[%v], value[%v]\n ", ck.leaderID, ck.me, args.RequestID, args.Key, args.Value)
     ok := ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
     if ok && reply.Err == OK {
@@ -92,7 +92,6 @@ func (ck *Clerk) PutAppend(key string, value string, op KVOperation) {
     time.Sleep(10 * time.Millisecond)
     // given that we sleep after making a request, when we wake, reassign the server we believe to be the leader
     ck.assignNewLeader()
-    reply.Err = ""
   }
 }
 

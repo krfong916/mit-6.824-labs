@@ -1,3 +1,4 @@
+// Key Value Service using Raft Module
 package kvraft
 
 import (
@@ -14,7 +15,7 @@ import (
   "github.com/krfong916/mit-6.824-labs/src/raft"
 )
 
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -52,6 +53,8 @@ type KVServer struct {
   quit                    chan bool                          // close long-running goroutines
 }
 
+// Get() fetches the current value for a particular key.
+// A Get() request on a non-existent key returns an empty string.
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
   // prepare operation and response
   op := Operation{
@@ -65,13 +68,14 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
   if err != "" {
     reply.Err = err
-  } else {
-    reply.Value = value
-    reply.Err = OK
+    return
   }
-  return
+  reply.Value = value
+  reply.Err = OK
 }
 
+// Append() to a non-existant key acts as a Put() operation,
+// otherwise, Append() appends to the current value of the key.
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
   // prepare operation and response
   op := Operation{
@@ -81,18 +85,22 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
     ClientID:  args.ClientID,
     RequestID: args.RequestID,
   }
-  color.New(color.FgCyan).Printf("[SERVER][%v] pending operation[%v] key: %v value: %v\n", kv.me, op.Name, op.Key, op.Value)
+  // color.New(color.FgCyan).Printf("[SERVER][%v] pending operation[%v] key: %v value: %v\n", kv.me, op.Name, op.Key, op.Value)
   _, err := kv.waitForOpToComplete(op)
   // color.New(color.FgCyan).Printf("[SERVER][%v] completed operation[%v] key: %v value: %v status: %v\n", kv.me, op.Op, op.Key, op.Value, ok)
   if err != "" {
     reply.Err = err
-  } else {
-    reply.Err = OK
+    return
   }
-  return
+  reply.Err = OK
 }
 
+// Submits the client operation to Raft for replication and waits until the operation
+// has been replicated in Raft's log.
+// waitForOpToComplete() uses channels to synchronize concurrent threads of execution.
+// If the
 func (kv *KVServer) waitForOpToComplete(op Operation) (string, Err) {
+
   // submit the operation to Raft
   index, _, isLeader := kv.rf.Start(op)
   if !isLeader {
@@ -103,7 +111,7 @@ func (kv *KVServer) waitForOpToComplete(op Operation) (string, Err) {
   // insert a new channel in the map of channels
   // how do we know when a request is finished so that we can notify the RPC?
   // well, when the client request has been replicated
-  // we'll receive on a channel contained in this map
+  // we'll receive a message on the channel that we have created
   replicatedOpsCh, exists := kv.replicatedOperationsMap[index]
   if exists == false {
     replicatedOpsCh = make(chan ReplicatedOperation, 1)
@@ -115,15 +123,15 @@ func (kv *KVServer) waitForOpToComplete(op Operation) (string, Err) {
   case result := <-replicatedOpsCh:
     completedOp := result.Operation
     sameOp := isSameOperation(completedOp, op)
-    color.New(color.FgGreen).Printf("COMPLETED, me: %v, operation: %v, requestID: %v, clientID: %v\n", kv.me, completedOp.Name, completedOp.RequestID, completedOp.ClientID)
-    color.New(color.FgGreen).Printf("COMPLETED, me: %v, client request, RequestID: %v ClientID: %v\n", kv.me, op.RequestID, op.ClientID)
-    color.New(color.FgGreen).Printf("COMPLETED, me: %v, value: %v\n", kv.me, completedOp.Value)
     if sameOp && result.Err == "" {
+      color.New(color.FgGreen).Printf("COMPLETED, me: %v, operation: %v, requestID: %v, clientID: %v\n", kv.me, completedOp.Name, completedOp.RequestID, completedOp.ClientID)
+      color.New(color.FgGreen).Printf("COMPLETED, me: %v, client request, RequestID: %v ClientID: %v\n", kv.me, op.RequestID, op.ClientID)
+      color.New(color.FgGreen).Printf("COMPLETED, me: %v, value: %v\n", kv.me, completedOp.Value)
       return completedOp.Value, ""
     }
     // fix what we return
     return "", result.Err
-  case <-time.After(800 * time.Millisecond):
+  case <-time.After(300 * time.Millisecond):
     kv.mu.Lock()
     delete(kv.replicatedOperationsMap, index)
     kv.mu.Unlock()
@@ -151,34 +159,19 @@ func (kv *KVServer) applyReplicatedCommands() {
   for !kv.killed() {
     select {
     case applyChannelResponse := <-kv.applyCh:
-      color.New(color.FgMagenta).Printf("Server # %v received on apply channel %v\n", kv.me, applyChannelResponse)
+      color.New(color.FgYellow).Printf("Server # %v received on apply channel %v\n", kv.me, applyChannelResponse)
       kv.mu.Lock()
       op := applyChannelResponse.Command.(Operation)
       index := applyChannelResponse.CommandIndex
       result := ReplicatedOperation{Operation: op}
 
       // Apply operation to the state machine
-      if op.Name == "GET" {
-        value, err := kv.applyReplicatedOpToStateMachine(op)
-        if err != "" {
-          result.Err = err
-        } else {
-          result.Operation.Value = value
-        }
-      } else {
-        if kv.isStaleRequest(op.RequestID, op.ClientID) {
-          result.Err = ErrStaleRequest
-        } else {
-          value, _ := kv.applyReplicatedOpToStateMachine(op)
-          result.Operation.Value = value
-          kv.lastApplied[op.ClientID] = op.RequestID
-        }
-      }
+      value, err := kv.applyReplicatedOpToStateMachine(op)
+      result.Err = err
+      result.Operation.Value = value
 
       kv.notifyReplicatedOpCh(index, result)
       kv.mu.Unlock()
-    // case <-kv.quit:
-    //   return
     default:
       time.Sleep(10 * time.Millisecond)
     }
@@ -191,16 +184,8 @@ func (kv *KVServer) notifyReplicatedOpCh(index int, result ReplicatedOperation) 
   if exists == false {
     replicatedOpsCh = make(chan ReplicatedOperation, 1)
     kv.replicatedOperationsMap[index] = replicatedOpsCh
-  } else if exists == true && len(replicatedOpsCh) == 1 {
-    color.New(color.FgRed).Println("DRAINING")
-  DRAIN_CHANNEL:
-    for {
-      select {
-      case <-replicatedOpsCh:
-      default:
-        break DRAIN_CHANNEL
-      }
-    }
+  } else if len(replicatedOpsCh) == 1 {
+    <-replicatedOpsCh
   }
 
   kv.replicatedOperationsMap[index] <- result
@@ -216,20 +201,25 @@ func (kv *KVServer) applyReplicatedOpToStateMachine(op Operation) (string, Err) 
     val, ok := kv.kvStore[op.Key]
     if !ok {
       error = ErrNoKey
-    } else {
-      value = val
+      break
     }
+    value = val
   case "PUT":
-    value = op.Value
-    kv.kvStore[op.Key] = op.Value
+    if kv.isStaleRequest(op.RequestID, op.ClientID) == false {
+      value = op.Value
+      kv.kvStore[op.Key] = op.Value
+    }
   case "APPEND":
-    var buffer bytes.Buffer
-    buffer.WriteString(kv.kvStore[op.Key])
-    buffer.WriteString(op.Value)
-    value := buffer.String()
-    color.New(color.FgCyan).Printf("Newly appended value %v\n", value)
-    kv.kvStore[op.Key] = value
+    if kv.isStaleRequest(op.RequestID, op.ClientID) == false {
+      var buffer bytes.Buffer
+      buffer.WriteString(kv.kvStore[op.Key])
+      buffer.WriteString(op.Value)
+      value := buffer.String()
+      // color.New(color.FgCyan).Printf("Newly appended value %v\n", value)
+      kv.kvStore[op.Key] = value
+    }
   }
+  kv.lastApplied[op.ClientID] = op.RequestID
   color.New(color.FgWhite).Printf("server #%v\n", kv.me)
   prettyPrint(kv.kvStore)
   return value, error
@@ -239,9 +229,9 @@ func (kv *KVServer) isStaleRequest(requestID int, clientID int64) bool {
   lastApplied, present := kv.lastApplied[clientID]
   if !present {
     return false
-  } else {
-    return lastApplied >= requestID
   }
+  color.New(color.FgGreen).Printf("lastApplied: %v clientRequestID: %v \n", lastApplied, requestID)
+  return lastApplied >= requestID
 }
 
 func prettyPrint(v interface{}) (err error) {
@@ -265,7 +255,6 @@ func prettyPrint(v interface{}) (err error) {
 func (kv *KVServer) Kill() {
   atomic.StoreInt32(&kv.dead, 1)
   kv.rf.Kill()
-  // kv.quit <- true
 }
 
 func (kv *KVServer) killed() bool {
