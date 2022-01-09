@@ -33,24 +33,18 @@ type Operation struct {
   RequestID int
 }
 
-// An object that describes the client operation that has been replicated.
-type ReplicatedOperation struct {
-  Operation Operation
-  Err       Err
-}
-
 // The Key Value Service.
 type KVServer struct {
-  mu                      sync.Mutex                         // a shared lock for managing concurrent-accessed state and cache
-  me                      int                                // our server ID
-  rf                      *raft.Raft                         // raft instance
-  applyCh                 chan raft.ApplyMsg                 // channel that the Raft module uses to send replicated operations to servers
-  dead                    int32                              // set by Kill()
-  maxraftstate            int                                // snapshot if log grows this big
-  kvStore                 map[string]string                  // in-memory key-value store
-  lastApplied             map[int64]int                      // the largest serial number processed for each client (latest request)
-  replicatedOperationsMap map[int](chan ReplicatedOperation) // map of channels for replicated ops
-  quit                    chan bool                          // close long-running goroutines
+  mu                   sync.Mutex                       // a shared lock for managing concurrent-accessed state and cache
+  me                   int                              // our server ID
+  rf                   *raft.Raft                       // raft instance
+  applyCh              chan raft.ApplyMsg               // channel that the Raft module uses to send replicated operations to servers
+  dead                 int32                            // set by Kill()
+  maxraftstate         int                              // snapshot if log grows this big
+  kvStore              map[string]string                // in-memory key-value store
+  lastApplied          map[int64]int                    // the largest serial number processed for each client (latest request)
+  replicationResultMap map[int](chan ReplicationResult) // map of channels for replicated ops
+  quit                 chan bool                        // close long-running goroutines
 }
 
 // Get() fetches the current value for a particular key.
@@ -64,14 +58,15 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
     RequestID: args.RequestID,
   }
 
-  value, err := kv.waitForOpToComplete(op)
+  result := kv.waitForOpToComplete(op)
 
-  if err != "" {
-    reply.Err = err
+  // for now, any replication error is considered an Wrong Leader Error
+  if !result.OK {
+    reply.Err = ErrWrongLeader
     return
   }
-  reply.Value = value
   reply.Err = OK
+  reply.Value = result.Value
 }
 
 // Append() to a non-existant key acts as a Put() operation,
@@ -86,10 +81,10 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
     RequestID: args.RequestID,
   }
   // color.New(color.FgCyan).Printf("[SERVER][%v] pending operation[%v] key: %v value: %v\n", kv.me, op.Name, op.Key, op.Value)
-  _, err := kv.waitForOpToComplete(op)
+  result := kv.waitForOpToComplete(op)
   // color.New(color.FgCyan).Printf("[SERVER][%v] completed operation[%v] key: %v value: %v status: %v\n", kv.me, op.Op, op.Key, op.Value, ok)
-  if err != "" {
-    reply.Err = err
+  if !result.OK {
+    reply.Err = ErrWrongLeader
     return
   }
   reply.Err = OK
@@ -99,12 +94,13 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // has been replicated in Raft's log.
 // waitForOpToComplete() uses channels to synchronize concurrent threads of execution.
 // If the
-func (kv *KVServer) waitForOpToComplete(op Operation) (string, Err) {
+func (kv *KVServer) waitForOpToComplete(op Operation) ReplicationResult {
 
   // submit the operation to Raft
   index, _, isLeader := kv.rf.Start(op)
   if !isLeader {
-    return "", ErrWrongLeader
+    earlyReturnResult := ReplicationResult{OK: false, Err: ErrWrongLeader}
+    return earlyReturnResult
   }
 
   kv.mu.Lock()
@@ -112,37 +108,37 @@ func (kv *KVServer) waitForOpToComplete(op Operation) (string, Err) {
   // how do we know when a request is finished so that we can notify the RPC?
   // well, when the client request has been replicated
   // we'll receive a message on the channel that we have created
-  replicatedOpsCh, exists := kv.replicatedOperationsMap[index]
+  replicationResultCh, exists := kv.replicationResultMap[index]
   if exists == false {
-    replicatedOpsCh = make(chan ReplicatedOperation, 1)
-    kv.replicatedOperationsMap[index] = replicatedOpsCh
+    replicationResultCh = make(chan ReplicationResult, 1)
+    kv.replicationResultMap[index] = replicationResultCh
   }
   kv.mu.Unlock()
 
   select {
-  case result := <-replicatedOpsCh:
-    completedOp := result.Operation
-    sameOp := isSameOperation(completedOp, op)
-    if sameOp && result.Err == "" {
-      color.New(color.FgGreen).Printf("COMPLETED, me: %v, operation: %v, requestID: %v, clientID: %v\n", kv.me, completedOp.Name, completedOp.RequestID, completedOp.ClientID)
+  case result := <-replicationResultCh:
+    sameOp := isSameOperation(result, op)
+    if sameOp {
+      color.New(color.FgGreen).Printf("COMPLETED, me: %v, requestID: %v, clientID: %v\n", kv.me, result.RequestID, result.ClientID)
       color.New(color.FgGreen).Printf("COMPLETED, me: %v, client request, RequestID: %v ClientID: %v\n", kv.me, op.RequestID, op.ClientID)
-      color.New(color.FgGreen).Printf("COMPLETED, me: %v, value: %v\n", kv.me, completedOp.Value)
-      return completedOp.Value, ""
+      color.New(color.FgGreen).Printf("COMPLETED, me: %v, value: %v\n", kv.me, result.Value)
+      return result
     }
-    // fix what we return
-    return "", result.Err
+    result.OK = false
+    return result
   case <-time.After(300 * time.Millisecond):
     kv.mu.Lock()
-    delete(kv.replicatedOperationsMap, index)
+    delete(kv.replicationResultMap, index)
     kv.mu.Unlock()
     color.New(color.FgRed).Println("FAILED")
-    return "", ErrTimedOut
+    timedOutResult := ReplicationResult{OK: false, Err: ErrTimedOut}
+    return timedOutResult
   }
 }
 
-func isSameOperation(applyChannelOp Operation, clientOp Operation) bool {
-  return applyChannelOp.ClientID == clientOp.ClientID &&
-    applyChannelOp.RequestID == clientOp.RequestID
+func isSameOperation(result ReplicationResult, clientOp Operation) bool {
+  return result.ClientID == clientOp.ClientID &&
+    result.RequestID == clientOp.RequestID
 }
 
 // Checks whether or not a key exists in the store.
@@ -159,16 +155,20 @@ func (kv *KVServer) applyReplicatedCommands() {
   for !kv.killed() {
     select {
     case applyChannelResponse := <-kv.applyCh:
-      color.New(color.FgYellow).Printf("Server # %v received on apply channel %v\n", kv.me, applyChannelResponse)
+      // color.New(color.FgYellow).Printf("Server # %v received on apply channel %v\n", kv.me, applyChannelResponse)
       kv.mu.Lock()
       op := applyChannelResponse.Command.(Operation)
       index := applyChannelResponse.CommandIndex
-      result := ReplicatedOperation{Operation: op}
+      result := ReplicationResult{
+        RequestID: op.RequestID,
+        ClientID:  op.ClientID,
+      }
 
       // Apply operation to the state machine
-      value, err := kv.applyReplicatedOpToStateMachine(op)
-      result.Err = err
-      result.Operation.Value = value
+      kvResult := kv.applyReplicatedOpToStateMachine(op)
+      result.OK = kvResult.OK
+      result.Err = kvResult.Err
+      result.Value = kvResult.Value
 
       kv.notifyReplicatedOpCh(index, result)
       kv.mu.Unlock()
@@ -178,51 +178,67 @@ func (kv *KVServer) applyReplicatedCommands() {
   }
 }
 
-func (kv *KVServer) notifyReplicatedOpCh(index int, result ReplicatedOperation) {
+func (kv *KVServer) notifyReplicatedOpCh(index int, result ReplicationResult) {
   // Send the replicated operation result on the replicated result channel
-  replicatedOpsCh, exists := kv.replicatedOperationsMap[index]
+  replicationResultCh, exists := kv.replicationResultMap[index]
   if exists == false {
-    replicatedOpsCh = make(chan ReplicatedOperation, 1)
-    kv.replicatedOperationsMap[index] = replicatedOpsCh
-  } else if len(replicatedOpsCh) == 1 {
-    <-replicatedOpsCh
+    replicationResultCh = make(chan ReplicationResult, 1)
+    kv.replicationResultMap[index] = replicationResultCh
+  } else if len(replicationResultCh) == 1 {
+    <-replicationResultCh
   }
 
-  kv.replicatedOperationsMap[index] <- result
+  kv.replicationResultMap[index] <- result
 }
 
 // This is the only function that "touches" the application state
-func (kv *KVServer) applyReplicatedOpToStateMachine(op Operation) (string, Err) {
-  var value string
-  var error Err
-  color.New(color.FgMagenta).Printf("Applying Operation to state machine%v\n", op)
+func (kv *KVServer) applyReplicatedOpToStateMachine(op Operation) KVResult {
+  result := KVResult{}
+  // color.New(color.FgMagenta).Printf("Applying Operation to state machine%v\n", op)
   switch op.Name {
   case "GET":
     val, ok := kv.kvStore[op.Key]
     if !ok {
-      error = ErrNoKey
-      break
+      result.Err = ErrNoKey
+      result.OK = false
+      return result
     }
-    value = val
+    result.Value = val
+    result.OK = true
   case "PUT":
-    if kv.isStaleRequest(op.RequestID, op.ClientID) == false {
-      value = op.Value
-      kv.kvStore[op.Key] = op.Value
+    result.OK = true
+    if kv.isStaleRequest(op.RequestID, op.ClientID) {
+      return result
     }
+    result.Value = op.Value
+    kv.kvStore[op.Key] = op.Value
   case "APPEND":
-    if kv.isStaleRequest(op.RequestID, op.ClientID) == false {
-      var buffer bytes.Buffer
-      buffer.WriteString(kv.kvStore[op.Key])
-      buffer.WriteString(op.Value)
-      value := buffer.String()
-      // color.New(color.FgCyan).Printf("Newly appended value %v\n", value)
-      kv.kvStore[op.Key] = value
+    result.OK = true
+    if kv.isStaleRequest(op.RequestID, op.ClientID) {
+      return result
     }
+    var buffer bytes.Buffer
+    buffer.WriteString(kv.kvStore[op.Key])
+    buffer.WriteString(op.Value)
+    value := buffer.String()
+    // color.New(color.FgCyan).Printf("Newly appended value %v\n", value)
+    kv.kvStore[op.Key] = value
   }
+  // I'm confused as to why we update the lastApplied request for a client
+  // Suppose we have two requests, A and B made by Client 1
+  // Request A, with an index of x, is sent by the client but the message experiences some delay
+  // Request B, with an index of x+1, is sent by the same client and the message is delivered before A is delivered
+  // Request B's operation is replicated and applied to the state machine before Request A is replicated and applied
+  // The state machine now has x+1 as the latest request for Client 1
+  // Now suppose Request A is finally delivered to our kv service and its operation is replicated
+  // According to our state machine's history: Client 1's latest applied request == x+1
+  // Why do we update Client 1's last applied request to x?
+  // Wouldn't that revert history?
+  // It would, the history would no longer be linearizable. Why? ... ok prove it.
   kv.lastApplied[op.ClientID] = op.RequestID
-  color.New(color.FgWhite).Printf("server #%v\n", kv.me)
-  prettyPrint(kv.kvStore)
-  return value, error
+  // color.New(color.FgWhite).Printf("server #%v\n", kv.me)
+  // prettyPrint(kv.kvStore)
+  return result
 }
 
 func (kv *KVServer) isStaleRequest(requestID int, clientID int64) bool {
@@ -230,7 +246,7 @@ func (kv *KVServer) isStaleRequest(requestID int, clientID int64) bool {
   if !present {
     return false
   }
-  color.New(color.FgGreen).Printf("lastApplied: %v clientRequestID: %v \n", lastApplied, requestID)
+  // color.New(color.FgGreen).Printf("lastApplied: %v clientRequestID: %v \n", lastApplied, requestID)
   return lastApplied >= requestID
 }
 
@@ -286,7 +302,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
   kv.maxraftstate = maxraftstate
 
   kv.applyCh = make(chan raft.ApplyMsg, 1)
-  kv.replicatedOperationsMap = make(map[int](chan ReplicatedOperation))
+  kv.replicationResultMap = make(map[int](chan ReplicationResult))
   kv.kvStore = make(map[string]string)
   kv.lastApplied = make(map[int64]int)
   kv.quit = make(chan bool)

@@ -1,3 +1,4 @@
+// Key Value Service using Raft Module - Configuration
 package kvraft
 
 import (

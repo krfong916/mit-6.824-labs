@@ -1,3 +1,4 @@
+// Key Value Service using Raft Module - Client
 package kvraft
 
 import (
@@ -45,8 +46,8 @@ func (ck *Clerk) Get(key string) string {
   }
   ck.mu.Unlock()
 
-  color.New(color.FgMagenta).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
   for {
+    color.New(color.FgMagenta).Printf("[GET_REQUEST][%v][%v]: key[%v]\n ", args.ClientID, args.RequestID, args.Key)
     reply := &GetReply{}
     ok := ck.servers[ck.leaderID].Call("KVServer.Get", args, reply)
     if ok && reply.Err == OK {
@@ -74,15 +75,15 @@ func (ck *Clerk) PutAppend(key string, value string, op KVOperation) {
     RequestID: ck.requestID,
   }
   ck.mu.Unlock()
-  color.New(color.FgMagenta).Printf("New Client Request[%v]: [PUT_APPEND_REQUEST]: %v\n", ck.me, args)
+  // color.New(color.FgMagenta).Printf("New Client Request[%v]: [PUT_APPEND_REQUEST]: %v\n", ck.me, args)
   for {
     reply := &PutAppendReply{}
-    // color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: leaderID[%v], clientID[%v], requestID[%v], key[%v], value[%v]\n ", ck.leaderID, ck.me, args.RequestID, args.Key, args.Value)
+    color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: leaderID[%v], clientID[%v], requestID[%v], key[%v], value[%v]\n ", ck.leaderID, ck.me, args.RequestID, args.Key, args.Value)
     ok := ck.servers[ck.leaderID].Call("KVServer.PutAppend", args, reply)
     if ok && reply.Err == OK {
       return
     }
-    // color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: WRONG_LEADER leaderID[%v]\n", ck.leaderID)
+    color.New(color.FgYellow).Printf("[PUT_APPEND_REQUEST]: WRONG_LEADER leaderID[%v]\n", ck.leaderID)
 
     // our request can fail for a number of reasons:
     // we can't contact the server (either because of network partition or leader failure),
