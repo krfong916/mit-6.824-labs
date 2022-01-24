@@ -11,6 +11,9 @@ Future work:
 - Implement a client application to demonstrate proof-of-concept
 - Draft experiential post of learnings
 
+### Preface
+The state of this repository is under active development and is not representative of production-quality code.
+
 # Snapshotting Thoughts
 
 time to time, the kv server persists snapshot
