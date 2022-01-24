@@ -35,6 +35,37 @@ type AppendEntriesReply struct {
   ConflictTerm  int  // The term of the conflicting entry
 }
 
+// Invoked by the leader to send chunks of a snapshot to a follower.
+// Leaders always send chunks in order.
+type InstallSnapshotArgs struct {
+  Term              int     // Leader's term
+  LeaderId          int     // So the follower can redirect clients
+  LastIncludedIndex int     // The snapshot replaces all entries up through and including this index
+  LastIncludedTerm  int     // Term of LastIncludedIndex
+  Offset            int64   // Byte offset where the chunk is positioned in the snapshot file
+  Data              []int64 // Raw bytes of the snapshot chunk, starting at offset
+  Done              bool    // True if this is the last chunk
+}
+
+type InstallSnapshotReply struct {
+  Term int // Current term for the leader to update itself
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+  rf.mu.Lock()
+  defer rf.mu.Unlock()
+  // reply immediately it term < currentTerm
+  if args.Term < rf.currentTerm {
+  }
+  // create new snapshot file if it is the first chunk (offset is 0)
+  // write data into snapshot file at the given offset
+  // reply and wait for more data chunks if done is false
+  // save snapshot file, discard any existing or partial snapshot with a smaller index
+  // if existing log entry has the same index and term as snapshot's last included entry, retain log entries following it and reply - do a for loop and compare
+  // discard the entire log
+  // reset state machine using snapshot contents (and load snapshot's cluster configuration)
+}
+
 /**
  * RequestVote is a candidate's attempt to request votes from peers
  * For a peer to give a candidate their vote
